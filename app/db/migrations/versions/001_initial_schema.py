@@ -51,8 +51,27 @@ def upgrade() -> None:
                   server_default=sa.func.now()),
     )
 
+    # Database-level trigger so updated_at is refreshed even for raw SQL updates
+    # (e.g. bulk updates, Alembic data migrations that bypass the ORM).
+    op.execute("""
+        CREATE OR REPLACE FUNCTION set_kv_store_updated_at()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            NEW.updated_at = now();
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+    """)
+    op.execute("""
+        CREATE TRIGGER kv_store_set_updated_at
+        BEFORE UPDATE ON kv_store
+        FOR EACH ROW EXECUTE FUNCTION set_kv_store_updated_at()
+    """)
+
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER IF EXISTS kv_store_set_updated_at ON kv_store")
+    op.execute("DROP FUNCTION IF EXISTS set_kv_store_updated_at")
     op.drop_table("kv_store")
     op.drop_index("idx_sync_events_zoho_task_id_created_at", table_name="sync_events")
     op.drop_index("idx_sync_events_created_at", table_name="sync_events")
