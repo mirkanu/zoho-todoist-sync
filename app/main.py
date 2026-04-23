@@ -3,12 +3,12 @@ from fastapi import FastAPI
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
 
-configure_logging(settings.log_level)
 log = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging(settings.log_level)
     log.info(
         "startup",
         zoho_region=settings.zoho_region,
