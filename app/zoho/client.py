@@ -120,6 +120,10 @@ class ZohoClient:
         - Criteria ALWAYS includes both Modified_Time and Owner — never a full scan.
         - HTTP 204 is treated as valid empty result (returns []).
         - Pagination terminates when info.more_records is False.
+
+        NOTE: this method is all-or-nothing. If any page request fails, the exception
+        propagates immediately and any already-accumulated records are discarded.
+        Callers should retry the full call on ZohoRateLimitError / ZohoAPIError.
         """
         since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         criteria = (
