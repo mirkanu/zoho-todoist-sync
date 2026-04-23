@@ -108,8 +108,8 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/3 | Not started | - |
-| 2. Zoho Read | 0/TBD | Not started | - |
+| 1. Foundation | 3/3 | Complete | 2026-04-23 |
+| 2. Zoho Read | 2/2 | Complete | 2026-04-24 |
 | 3. Todoist Read | 0/TBD | Not started | - |
 | 4. Write Operations | 0/TBD | Not started | - |
 | 5. arq Worker | 0/TBD | Not started | - |
