@@ -67,10 +67,10 @@ Validated in Phase 1 (Foundation):
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Canonical hash loop prevention | Hash the normalised payload identically from either source; skip if incoming hash matches stored hash. Solves the echo problem at the data layer, not the timing layer. | — Pending |
-| Footer `[zoho:ID]` in Todoist description | Keeps Zoho task ID in Todoist without touching user's label space. Regex-parseable, survives user edits above the footer. | — Pending |
-| Zoho custom field `Todoist_Task_ID` | Direct lookup without scanning descriptions; also acts as "already synced" marker. | — Pending |
-| Due date always date-only | Zoho API may return `YYYY-MM-DDTHH:MM:SS+offset` even for date-only fields. Always normalise to `YYYY-MM-DD`, never pass `due_datetime` to Todoist. Fixes the time-chip regression. | — Pending |
+| Canonical hash loop prevention | Hash the normalised payload identically from either source; skip if incoming hash matches stored hash. Solves the echo problem at the data layer, not the timing layer. | Implemented in Phase 01: SHA-256 over JSON(sort_keys=True), stable across TZ/Unicode/CRLF. 48 unit tests pass. |
+| Footer `[zoho:ID]` in Todoist description | Keeps Zoho task ID in Todoist without touching user's label space. Regex-parseable, survives user edits above the footer. | Implemented in Phase 01: FOOTER_RE and ZOHO_ID_RE exported from normalise.py. |
+| Zoho custom field `Todoist_Task_ID` | Direct lookup without scanning descriptions; also acts as "already synced" marker. | — Pending (resolved in Phase 02) |
+| Due date always date-only | Zoho API may return `YYYY-MM-DDTHH:MM:SS+offset` even for date-only fields. Always normalise to `YYYY-MM-DD`, never pass `due_datetime` to Todoist. Fixes the time-chip regression. | Implemented in Phase 01: normalise_due_date uses fromisoformat().date(); returns None for unparseable input (stricter than plan's raw[:10] fallback). |
 | Todoist delete → Zoho delete | Treat Todoist deletion as an intent signal, not just local cleanup. Sends email notification via Resend. Accepted risk: Todoist deletions are hard to recover from. | — Pending |
 | Reassignment → Todoist delete + email | Task reassigned away in Zoho means it's no longer my responsibility; remove from Todoist and notify via Resend. | — Pending |
 | LWW conflict resolution with logging | Last-write-wins on simultaneous edits, logged in sync_events with `action='overwrite'`. Simple for v1; inspect if it causes data loss. | — Pending |
