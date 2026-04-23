@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from pydantic_settings import BaseSettings
 
 
@@ -25,4 +27,12 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
-settings = Settings()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+# Module-level alias for backwards compatibility.
+# Callers should prefer get_settings() so tests can patch it via
+# get_settings.cache_clear() + monkeypatch.setenv().
+settings = get_settings()
