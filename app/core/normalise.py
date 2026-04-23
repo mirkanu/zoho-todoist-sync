@@ -26,7 +26,8 @@ def normalise_due_date(raw: str | None) -> str | None:
     try:
         return str(datetime.fromisoformat(raw).date())
     except ValueError:
-        return raw[:10]
+        # Unknown format — treat as no due date rather than silently truncating.
+        return None
 
 
 def normalise_title(raw: str | None) -> str:
