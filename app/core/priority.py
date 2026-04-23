@@ -1,7 +1,7 @@
 # app/core/priority.py
 
 # Zoho priority string → Todoist priority integer
-ZOHO_TO_TODOIST: dict[str, int] = {
+ZOHO_TO_TODOIST: dict[str | None, int] = {
     "Highest": 4,   # p1 / urgent (red)
     "High":    3,   # p2 (orange)
     "Normal":  2,   # p3 (blue)
