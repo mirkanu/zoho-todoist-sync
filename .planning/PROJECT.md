@@ -12,7 +12,14 @@ All Zoho tasks assigned to me appear in Todoist within 60 seconds, and edits flo
 
 ### Validated
 
-(None yet — ship to validate)
+Validated in Phase 1 (Foundation):
+- Project scaffold with pinned Python dependencies and fail-fast env validation
+- Canonical hash stable across TZ offsets, Unicode forms, and line endings (LOOP-2)
+- Priority mapping NOT inverted: Highest→4, High→3, Normal→2, Low/unset→1 (SYNC-2)
+- NormalisedTask has exactly 4 fields — no description, no labels in sync scope (SYNC-7, SYNC-9)
+- Zoho ID footer regex `[zoho:ID]` extracted at module level (SYNC-5)
+- Postgres schema: sync_state, sync_events, kv_store tables with indexes and async Alembic migration (INFRA-1, INFRA-2)
+- Fail-fast Settings class raises ValidationError on missing required env vars (INFRA-5)
 
 ### Active
 
@@ -88,4 +95,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-22 after initialization*
+*Last updated: 2026-04-23 after Phase 1 (Foundation) complete*
