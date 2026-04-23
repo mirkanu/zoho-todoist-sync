@@ -17,17 +17,10 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 
 ## Phase Details
 
-### Phase 1: Foundation
-**Goal**: All correctness-critical components exist, are unit-tested, and have no external dependencies — the project can be cloned and `pytest` run with no API credentials
-**Depends on**: Nothing (first phase)
-**Requirements**: INFRA-1, INFRA-2, INFRA-3, INFRA-4, INFRA-5, INFRA-6, INFRA-7, LOOP-1, LOOP-2, SYNC-2, SYNC-5, SYNC-7, SYNC-9, OBS-5
-**Success Criteria** (what must be TRUE):
-  1. Postgres schema exists with `sync_state`, `sync_events`, and `kv_store` tables and all required indexes; Alembic (or plain SQL) migration applies cleanly from scratch
-  2. All environment variables are declared, validated on startup, and the service refuses to start with a missing required var (fail-fast)
-  3. `canonical_hash(task)` returns identical SHA-256 hex for the same logical task regardless of which system it originated from — verified by unit tests covering: date normalisation (`2026-05-01T00:00:00+05:30` → `2026-05-01`), footer stripping, null/empty description, priority mapping, Unicode NFC normalisation, and CRLF line endings
-  4. Priority mapping table is explicit, bidirectional, and tested with a round-trip test confirming Zoho Highest → Todoist 4 → Zoho Highest (not inverted)
-  5. Structured logging is configured; log level is controlled by `LOG_LEVEL` env var; service startup logs the resolved Zoho region and field cache status
-**Plans**: TBD
+**Plans**: 3 plans
+  - [ ] 01-01-PLAN.md — Project scaffold (pyproject, requirements, .python-version, .gitignore, .env.example) + fail-fast Settings config with unit tests
+  - [ ] 01-02-PLAN.md — Pure utility modules: normalise, canonical hash, priority mapping, structured logging + full unit test suite
+  - [ ] 01-03-PLAN.md — SQLAlchemy models (sync_state, sync_events, kv_store) + Alembic initial migration + FastAPI lifespan stub
 
 ### Phase 2: Zoho Read
 **Goal**: The service can authenticate to Zoho and fetch task data, with proactive token refresh and graceful auth-failure handling — no writes to Zoho yet
@@ -113,7 +106,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/3 | Not started | - |
 | 2. Zoho Read | 0/TBD | Not started | - |
 | 3. Todoist Read | 0/TBD | Not started | - |
 | 4. Write Operations | 0/TBD | Not started | - |
