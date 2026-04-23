@@ -134,9 +134,8 @@ async def test_lifespan_logs_warn_when_terminal_status_missing_from_picklist(
         async with lifespan(app):
             pass
     # The WARN must have been logged with event name zoho_terminal_status_not_in_picklist.
-    all_text = " ".join(rec.getMessage() for rec in caplog.records) + " " + \
-               " ".join(str(rec.__dict__) for rec in caplog.records)
-    assert "zoho_terminal_status_not_in_picklist" in all_text
+    warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("zoho_terminal_status_not_in_picklist" in r.getMessage() for r in warn_records)
 
 
 async def test_lifespan_logs_warn_when_todoist_field_missing(_patched_lifespan, caplog):
@@ -149,6 +148,5 @@ async def test_lifespan_logs_warn_when_todoist_field_missing(_patched_lifespan, 
     with caplog.at_level(logging.WARNING):
         async with lifespan(app):
             pass
-    all_text = " ".join(rec.getMessage() for rec in caplog.records) + " " + \
-               " ".join(str(rec.__dict__) for rec in caplog.records)
-    assert "zoho_todoist_task_id_field_not_found" in all_text
+    warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("zoho_todoist_task_id_field_not_found" in r.getMessage() for r in warn_records)
