@@ -19,8 +19,8 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 
 **Plans**: 3 plans
   - [x] 01-01-PLAN.md — Project scaffold (pyproject, requirements, .python-version, .gitignore, .env.example) + fail-fast Settings config with unit tests
-  - [ ] 01-02-PLAN.md — Pure utility modules: normalise, canonical hash, priority mapping, structured logging + full unit test suite
-  - [ ] 01-03-PLAN.md — SQLAlchemy models (sync_state, sync_events, kv_store) + Alembic initial migration + FastAPI lifespan stub
+  - [x] 01-02-PLAN.md — Pure utility modules: normalise, canonical hash, priority mapping, structured logging + full unit test suite
+  - [x] 01-03-PLAN.md — SQLAlchemy models (sync_state, sync_events, kv_store) + Alembic initial migration + FastAPI lifespan stub
 
 ### Phase 2: Zoho Read
 **Goal**: The service can authenticate to Zoho and fetch task data, with proactive token refresh and graceful auth-failure handling — no writes to Zoho yet
