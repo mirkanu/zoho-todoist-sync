@@ -1,4 +1,5 @@
 # tests/unit/test_zoho_client.py
+import re
 import pytest
 from app.zoho.client import (
     ZohoClient,
@@ -75,13 +76,13 @@ async def test_get_fields_metadata_returns_none_when_no_todoist_field(httpx_mock
 async def test_fetch_modified_since_paginates(httpx_mock):
     # Page 1: more_records=True
     httpx_mock.add_response(
-        url__startswith=f"{ZOHO_BASE}/Tasks/search",
+        url=re.compile(rf"{re.escape(ZOHO_BASE)}/Tasks/search.*"),
         json={"data": [{"id": "1"}, {"id": "2"}],
               "info": {"per_page": 200, "count": 2, "page": 1, "more_records": True}},
     )
     # Page 2: more_records=False
     httpx_mock.add_response(
-        url__startswith=f"{ZOHO_BASE}/Tasks/search",
+        url=re.compile(rf"{re.escape(ZOHO_BASE)}/Tasks/search.*"),
         json={"data": [{"id": "3"}],
               "info": {"per_page": 200, "count": 1, "page": 2, "more_records": False}},
     )
@@ -95,7 +96,7 @@ async def test_fetch_modified_since_paginates(httpx_mock):
     assert [r["id"] for r in results] == ["1", "2", "3"]
 
 async def test_fetch_modified_since_204_is_empty_list(httpx_mock):
-    httpx_mock.add_response(url__startswith=f"{ZOHO_BASE}/Tasks/search", status_code=204)
+    httpx_mock.add_response(url=re.compile(rf"{re.escape(ZOHO_BASE)}/Tasks/search.*"), status_code=204)
     from datetime import datetime, timezone
     client = ZohoClient(access_token="test-token")
     results = await client.fetch_tasks_modified_since(
@@ -106,7 +107,7 @@ async def test_fetch_modified_since_204_is_empty_list(httpx_mock):
 
 async def test_fetch_modified_since_criteria_has_modified_time_and_owner(httpx_mock):
     httpx_mock.add_response(
-        url__startswith=f"{ZOHO_BASE}/Tasks/search",
+        url=re.compile(rf"{re.escape(ZOHO_BASE)}/Tasks/search.*"),
         json={"data": [], "info": {"more_records": False, "per_page": 200, "count": 0, "page": 1}},
     )
     from datetime import datetime, timezone
