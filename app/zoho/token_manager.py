@@ -63,13 +63,16 @@ async def refresh_access_token(settings: Settings) -> tuple[str, datetime]:
 
 
 async def upsert_kv(session: AsyncSession, key: str, value: str) -> None:
-    """Idempotent upsert of a kv_store row. DB trigger updates updated_at."""
+    """Idempotent upsert of a kv_store row. DB trigger updates updated_at.
+
+    Does NOT commit — callers must call session.commit() after all upsert_kv
+    calls so that multiple writes are committed atomically in a single transaction.
+    """
     existing = await session.get(KVStore, key)
     if existing is None:
         session.add(KVStore(key=key, value=value))
     else:
         existing.value = value
-    await session.commit()
 
 
 async def load_token_from_kv(session: AsyncSession) -> tuple[str | None, datetime | None]:
@@ -109,6 +112,7 @@ async def proactive_refresh_loop(
             async with session_factory() as session:
                 await _self.upsert_kv(session, KV_ACCESS_TOKEN_KEY, new_token)
                 await _self.upsert_kv(session, KV_EXPIRES_AT_KEY, new_expires_at.isoformat())
+                await session.commit()
         except Exception as exc:
             log.error("zoho_token_refresh_failed", error=str(exc))
             raise

@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
         async with session_factory() as session:
             await upsert_kv(session, KV_ACCESS_TOKEN_KEY, access_token)
             await upsert_kv(session, KV_EXPIRES_AT_KEY, expires_at.isoformat())
+            await session.commit()
     else:
         access_token = stored_token
         expires_at = stored_expires_at
