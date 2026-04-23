@@ -136,3 +136,4 @@ async def test_proactive_refresh_loop_reraises_on_failure(monkeypatch, complete_
     token_state: dict = {}
     with pytest.raises(RuntimeError, match="network down"):
         await proactive_refresh_loop(token_state, session_factory)
+    assert token_state == {}  # state must be unchanged after a failed refresh
