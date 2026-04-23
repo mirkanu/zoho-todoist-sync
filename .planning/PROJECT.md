@@ -21,6 +21,14 @@ Validated in Phase 1 (Foundation):
 - Postgres schema: sync_state, sync_events, kv_store tables with indexes and async Alembic migration (INFRA-1, INFRA-2)
 - Fail-fast Settings class raises ValidationError on missing required env vars (INFRA-5)
 
+Validated in Phase 2 (Zoho Read):
+- Proactive OAuth token refresh every 50 min; re-raises on failure (INFRA-6)
+- Startup field metadata resolution — `api_name` for `Todoist Task ID` custom field resolved from Zoho API and cached (INFRA-7)
+- Typed exceptions (ZohoAuthError, ZohoNotFoundError, ZohoRateLimitError) for all non-2xx Zoho responses (SYNC-4)
+- Paginated `fetch_tasks_modified_since` always includes `Modified_Time` filter — no full scans (SYNC-4)
+- `zoho_record_to_normalised` adapter reuses Phase 1 normalisation helpers (SYNC-4)
+- `zoho_job_defer_secs` constant exposed in Settings for Phase 5 (LOOP-4)
+
 ### Active
 
 - [ ] All open Zoho CRM tasks assigned to me appear in the target Todoist project within 60s of a change in Zoho
@@ -95,4 +103,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-23 after Phase 1 (Foundation) complete*
+*Last updated: 2026-04-23 after Phase 2 (Zoho Read) complete*
