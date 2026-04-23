@@ -31,7 +31,9 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   2. On startup, the actual `api_name` for the `Todoist Task ID` custom field is read from `GET /crm/v6/settings/fields?module=Tasks` and cached; Zoho terminal statuses are read from the same endpoint and compared against `ZOHO_TERMINAL_STATUSES`
   3. `fetch_zoho_task(zoho_task_id)` returns a normalised task dict (all fields normalised per LOOP-2 rules) or raises a typed exception for 404, 401, and rate-limit (429) responses
   4. `fetch_zoho_tasks_modified_since(timestamp)` returns paginated results filtered by both `Modified_Time` and `Owner.id`; a `Modified_Time` filter is always present (never a full scan)
-**Plans**: TBD
+**Plans**: 2 plans
+  - [ ] 02-01-PLAN.md — ZohoClient + typed exceptions + get_task + get_fields_metadata + fetch_tasks_modified_since + zoho_record_to_normalised adapter (SYNC-4, INFRA-7)
+  - [ ] 02-02-PLAN.md — token_manager (refresh_access_token + proactive_refresh_loop + kv_store persistence) + FastAPI lifespan wiring (load/refresh token, resolve field metadata, start refresh task) (INFRA-6, INFRA-7, LOOP-4)
 
 ### Phase 3: Todoist Read
 **Goal**: The service can authenticate to Todoist, fetch tasks, perform incremental Sync API polls, and extract the Zoho task ID footer from any description — no writes to Todoist yet
