@@ -536,22 +536,13 @@ if zoho_id is None:
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Sync API project_id field name in item dict**
-   - What we know: Sync API response `items` is a list of dicts. Official docs reference `project_id` in item objects.
-   - What's unclear: Whether the Sync API uses `project_id` or a different key (v1 may differ from v9 field names).
-   - Recommendation: Log the raw first item on startup sync and confirm the key name. Use `item.get("project_id")` defensively.
+1. **Sync API project_id field name in item dict** — RESOLVED: Use `item.get("project_id")` defensively; log raw first item on startup to confirm key name. Plan 03-02 Task 2 acceptance criterion includes `test_sync_delta_filters_by_project_id`.
 
-2. **Sync API rate limits**
-   - What we know: Todoist rate limits are per-user; incremental syncs are recommended to minimize full syncs.
-   - What's unclear: Exact rate limit on Sync API calls (requests/minute). The reconciliation cron at 15-min intervals is conservative.
-   - Recommendation: Handle 429 from Sync API with backoff; log WARN. At 15-min intervals this should not be an issue.
+2. **Sync API rate limits** — RESOLVED: Handle 429 from Sync API with `TodoistRateLimitError` typed exception + test coverage. At 15-min cron intervals this should not be an issue.
 
-3. **`TodoistAPIAsync._token` visibility**
-   - What we know: The attribute is named `_token` (single underscore — conventional private, not name-mangled).
-   - What's unclear: Whether a future SDK version changes this.
-   - Recommendation: Store `api_token` on `TodoistClient` at init time so `fetch_sync_delta()` uses `self._api_token` rather than `self._api._token`.
+3. **`TodoistAPIAsync._token` visibility** — RESOLVED: Plan 03-02 Task 1 stores `self._api_token = api_token` at init time. `fetch_sync_delta()` uses `self._api_token` directly, avoiding access to private `self._api._token`. Acceptance criterion greps for `self._api_token = api_token`.
 
 ---
 
