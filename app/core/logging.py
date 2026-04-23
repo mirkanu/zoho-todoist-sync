@@ -1,57 +1,26 @@
-"""
-Structured logging configuration using structlog.
-
-This module provides configure_logging() and get_logger() for use
-throughout the application.
-"""
+# app/core/logging.py
 import logging
-import sys
-from typing import Any
+import structlog
 
-try:
-    import structlog
 
-    def configure_logging(level: str = "INFO") -> None:
-        """Configure structlog for JSON-line structured output."""
-        log_level = getattr(logging, level.upper(), logging.INFO)
-        logging.basicConfig(
-            format="%(message)s",
-            stream=sys.stdout,
-            level=log_level,
-        )
-        structlog.configure(
-            processors=[
-                structlog.stdlib.filter_by_level,
-                structlog.stdlib.add_logger_name,
-                structlog.stdlib.add_log_level,
-                structlog.stdlib.PositionalArgumentsFormatter(),
-                structlog.processors.TimeStamper(fmt="iso"),
-                structlog.processors.StackInfoRenderer(),
-                structlog.processors.format_exc_info,
-                structlog.processors.UnicodeDecoder(),
-                structlog.processors.JSONRenderer(),
-            ],
-            context_class=dict,
-            logger_factory=structlog.stdlib.LoggerFactory(),
-            wrapper_class=structlog.stdlib.BoundLogger,
-            cache_logger_on_first_use=True,
-        )
+def configure_logging(level: str = "INFO") -> None:
+    logging.basicConfig(
+        format="%(message)s",
+        level=getattr(logging, level.upper(), logging.INFO),
+    )
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer() if level == "DEBUG" else structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(
+            getattr(logging, level.upper(), logging.INFO)
+        ),
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
 
-    def get_logger(name: str) -> Any:
-        """Return a structlog bound logger."""
-        return structlog.get_logger(name)
 
-except ImportError:
-    # Fallback to stdlib logging if structlog is not installed
-    def configure_logging(level: str = "INFO") -> None:
-        """Configure stdlib logging as fallback."""
-        log_level = getattr(logging, level.upper(), logging.INFO)
-        logging.basicConfig(
-            format="%(asctime)s %(levelname)-5.5s [%(name)s] %(message)s",
-            stream=sys.stdout,
-            level=log_level,
-        )
-
-    def get_logger(name: str) -> Any:
-        """Return a stdlib logger."""
-        return logging.getLogger(name)
+def get_logger(name: str):
+    return structlog.get_logger(name)
