@@ -44,7 +44,10 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   2. On startup, Todoist Sync API is called with `sync_token="*"` for a full snapshot; the returned `sync_token` is persisted to Postgres (`kv_store`); on restart, the stored token is loaded and incremental sync resumes
   3. `extract_zoho_id(description)` correctly parses `[zoho:(\d+)]` from any position in the description, returns `None` for tasks without the footer, and is verified by unit tests covering missing footer, footer mid-text, and footer after user edits
   4. `item:added` events for tasks without a `[zoho:ID]` footer are logged and discarded; tasks without the footer that arrive via the Sync API delta are ignored
-**Plans**: TBD
+**Plans**: 3 plans
+  - [ ] 03-01-PLAN.md — app/todoist/normalise.py: extract_zoho_id() + todoist_task_to_normalised() adapter + unit tests (SYNC-5, SYNC-8, SYNC-9)
+  - [ ] 03-02-PLAN.md — app/todoist/client.py: TodoistClient wrapping TodoistAPIAsync + typed exceptions + fetch_sync_delta with client-side project filter (SYNC-5, SYNC-8)
+  - [ ] 03-03-PLAN.md — app/todoist/sync_manager.py: load/save sync_token + startup_sync + FastAPI lifespan wiring (SEED-7, SYNC-8)
 
 ### Phase 4: Write Operations
 **Goal**: The service can create, update, complete, and delete tasks in both Todoist and Zoho with idempotent, normalised payloads
@@ -110,7 +113,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete | 2026-04-23 |
 | 2. Zoho Read | 2/2 | Complete | 2026-04-24 |
-| 3. Todoist Read | 0/TBD | Not started | - |
+| 3. Todoist Read | 0/3 | Not started | - |
 | 4. Write Operations | 0/TBD | Not started | - |
 | 5. arq Worker | 0/TBD | Not started | - |
 | 6. Webhooks | 0/TBD | Not started | - |
