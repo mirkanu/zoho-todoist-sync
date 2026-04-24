@@ -78,7 +78,10 @@ async def update_zoho_task(
 async def complete_zoho_task(zoho_task_id: str, access_token: str) -> None:
     """EDGE-4: PUT Status = first configured terminal status. Never hardcode 'Completed'."""
     from app.core.config import get_settings  # lazy import so tests can patch via monkeypatch.setenv
-    terminal = get_settings().zoho_terminal_statuses_list[0]
+    statuses = get_settings().zoho_terminal_statuses_list
+    if not statuses:
+        raise ZohoAPIError("ZOHO_TERMINAL_STATUSES is empty — cannot complete task")
+    terminal = statuses[0]
     async with httpx.AsyncClient() as client:
         resp = await client.put(
             f"{ZOHO_EU_BASE_URL}/Tasks/{zoho_task_id}",
