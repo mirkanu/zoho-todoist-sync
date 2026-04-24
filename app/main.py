@@ -4,6 +4,7 @@ import logging as _stdlib_logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import resend
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -30,6 +31,7 @@ _log = _stdlib_logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level)
+    resend.api_key = settings.resend_api_key
     log.info(
         "startup",
         zoho_region=settings.zoho_region,
