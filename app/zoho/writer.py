@@ -11,10 +11,10 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-import resend
 
 from app.core.logging import get_logger
 from app.core.normalise import NormalisedTask
+from app.core.notifications import send_deletion_notification
 from app.core.priority import todoist_to_zoho_priority
 from app.zoho.client import (
     ZOHO_EU_BASE_URL,
@@ -104,7 +104,7 @@ async def delete_zoho_task(zoho_task_id: str, access_token: str) -> None:
         return  # already gone - do NOT send email (Pitfall 5)
     _zoho_handle(resp, f"DELETE /Tasks/{zoho_task_id}")
     log.info("zoho_task_deleted", zoho_id=zoho_task_id)
-    await _send_deletion_notification(
+    await send_deletion_notification(
         subject=f"[zoho-todoist-sync] Zoho task deleted: {zoho_task_id}",
         html=f"<p>Zoho task <code>{zoho_task_id}</code> was deleted by the sync service "
              f"(propagation from a Todoist deletion).</p>",
@@ -128,18 +128,3 @@ async def write_todoist_id_to_zoho(
         )
     _zoho_handle(resp, f"PUT /Tasks/{zoho_task_id} write_todoist_id")
     log.info("zoho_todoist_id_written", zoho_id=zoho_task_id, todoist_id=todoist_task_id)
-
-
-async def _send_deletion_notification(subject: str, html: str) -> None:
-    """Fire-and-forget Resend email. EDGE-6: failure logged, NOT re-raised."""
-    try:
-        params: resend.Emails.SendParams = {
-            "from": "sync-alerts@resend.dev",  # A3: update to verified domain in Phase 8
-            "to": ["manuelkuhs@gmail.com"],
-            "subject": subject,
-            "html": html,
-        }
-        await resend.Emails.send_async(params)
-    except Exception as exc:
-        log.error("resend_email_failed", error=str(exc))
-        # Do NOT re-raise - EDGE-6.
