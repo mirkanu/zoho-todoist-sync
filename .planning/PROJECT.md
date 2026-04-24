@@ -21,6 +21,13 @@ Validated in Phase 1 (Foundation):
 - Postgres schema: sync_state, sync_events, kv_store tables with indexes and async Alembic migration (INFRA-1, INFRA-2)
 - Fail-fast Settings class raises ValidationError on missing required env vars (INFRA-5)
 
+Validated in Phase 3 (Todoist Read):
+- `[zoho:ID]` footer extraction robust to None, empty, missing, and non-digit IDs via `extract_zoho_id()` (SYNC-5)
+- Footerless Todoist items discarded at startup sync — `extract_zoho_id() is None` → log + skip (SYNC-8)
+- Labels structurally excluded from sync path — `NormalisedTask` has no labels field; adapter never reads `task.labels`; enforced by two separate unit tests (SYNC-9)
+- `sync_token` persisted to `kv_store` before item processing loop for crash-safety; `"*"` sentinel triggers full sync on first run (SEED-7)
+- `startup_sync` wired into FastAPI lifespan before `yield`; `TodoistClient` lifecycle managed (open/close) around lifespan
+
 Validated in Phase 2 (Zoho Read):
 - Proactive OAuth token refresh every 50 min; re-raises on failure (INFRA-6)
 - Startup field metadata resolution — `api_name` for `Todoist Task ID` custom field resolved from Zoho API and cached (INFRA-7)
@@ -103,4 +110,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-23 after Phase 2 (Zoho Read) complete*
+*Last updated: 2026-04-24 after Phase 3 (Todoist Read) complete*
