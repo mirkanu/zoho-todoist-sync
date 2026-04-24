@@ -1,15 +1,22 @@
-"""FastAPI webhook router: Zoho (notification-only) and Todoist (stub; Plan 02 fills in).
+"""FastAPI webhook router: Zoho (notification-only) and Todoist (HMAC + event dispatch).
 
 Both endpoints return 200 before any DB write or external API call. The only
-synchronous work permitted: payload parsing and (for Todoist, Plan 02) HMAC
-verification. All sync logic lives in the worker.
+synchronous work permitted: payload parsing and HMAC verification. All sync
+logic lives in the worker.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+
 from fastapi import APIRouter, HTTPException, Request
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.db.models import SyncState
+from app.todoist.normalise import extract_zoho_id
 from app.worker.enqueue import enqueue_sync
 
 log = get_logger(__name__)
@@ -55,12 +62,114 @@ async def zoho_webhook(request: Request):
     return {"ok": True}
 
 
+async def _lookup_zoho_id(session_factory, todoist_task_id: str) -> str | None:
+    """Single indexed read of sync_state; returns zoho_task_id or None.
+
+    This is the ONLY DB operation permitted inside a webhook handler. The
+    column `sync_state.todoist_task_id` is indexed (idx_sync_state_todoist_task_id),
+    so this is O(log n) and well inside the 200ms handler SLA.
+    """
+    async with session_factory() as session:
+        result = await session.execute(
+            select(SyncState.zoho_task_id).where(
+                SyncState.todoist_task_id == todoist_task_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+
 @router.post("/todoist")
 async def todoist_webhook(request: Request):
-    """Todoist webhook — STUB. Plan 06-02 replaces this body with HMAC
-    verification + event_name dispatch + sync_state lookup + enqueue_sync.
+    """Todoist webhook: HMAC-verify, then dispatch by event_name.
 
-    Returns 200 for now so Plan 01's path-registration check passes without
-    introducing side-effects.
+    Security: HMAC-SHA256 over the RAW request body (Pitfall 1); constant-time
+    comparison via hmac.compare_digest (Pitfall 5). Parsed body is trusted only
+    after signature verification succeeds.
+
+    Routing:
+      item:added   → check footer; discard if absent (SYNC-8); enqueue if present (LOOP-5)
+      item:updated / item:completed / item:uncompleted → lookup sync_state → enqueue
+      item:deleted → lookup sync_state → enqueue (worker handles delete path)
+      other        → log DEBUG, return 200
     """
+    raw_body = await request.body()  # MUST precede any request.json() call (Pitfall 1)
+
+    settings = get_settings()
+    expected = base64.b64encode(
+        hmac.new(
+            settings.todoist_client_secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).digest()
+    ).decode("utf-8")
+    received = request.headers.get("X-Todoist-Hmac-SHA256", "")
+    if not hmac.compare_digest(expected, received):
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+    try:
+        payload = await request.json()  # safe: body already cached by Starlette
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON")
+
+    event_name = payload.get("event_name", "") or ""
+    event_data = payload.get("event_data") or {}
+    todoist_task_id = str(event_data.get("id", ""))
+
+    # Project isolation gate (Pitfall 6). Todoist webhooks fire for ALL account
+    # tasks; filter to the configured sync project at the edge to avoid
+    # spurious DB lookups.
+    if event_data.get("project_id") != settings.todoist_project_id:
+        log.debug(
+            "todoist_event_wrong_project",
+            event_name=event_name,
+            todoist_task_id=todoist_task_id,
+            project_id=event_data.get("project_id"),
+        )
+        return {"ok": True}
+
+    redis = request.app.state.redis
+    session_factory = request.app.state.session_factory
+
+    if event_name == "item:added":
+        description = event_data.get("description") or ""
+        zoho_id = extract_zoho_id(description)
+        if zoho_id is None:
+            # SYNC-8: Todoist-native task, not sync-managed.
+            log.info(
+                "todoist_item_added_no_footer_discarded",
+                todoist_task_id=todoist_task_id,
+            )
+            return {"ok": True}
+        # LOOP-5: sync-managed task (footer present). Enqueue; the worker's
+        # echo_suppressed path will catch the self-triggered loop.
+        await enqueue_sync(redis, zoho_id, defer_secs=0)
+        return {"ok": True}
+
+    if event_name in ("item:updated", "item:completed", "item:uncompleted"):
+        zoho_id = await _lookup_zoho_id(session_factory, todoist_task_id)
+        if zoho_id is None:
+            # EDGE-8: footer-less or unsynced task; reconciler (Phase 7) will catch up.
+            log.warning(
+                "todoist_event_no_sync_state",
+                event_name=event_name,
+                todoist_task_id=todoist_task_id,
+            )
+            return {"ok": True}
+        await enqueue_sync(redis, zoho_id, defer_secs=0)
+        return {"ok": True}
+
+    if event_name == "item:deleted":
+        zoho_id = await _lookup_zoho_id(session_factory, todoist_task_id)
+        if zoho_id is None:
+            log.info(
+                "todoist_item_deleted_no_sync_state",
+                todoist_task_id=todoist_task_id,
+            )
+            return {"ok": True}
+        # Worker's sync_task handles the delete path via refetch (ZohoNotFoundError,
+        # or explicit deletion semantics in Phase 7); we hand off the same way.
+        await enqueue_sync(redis, zoho_id, defer_secs=0)
+        return {"ok": True}
+
+    log.debug("todoist_event_ignored", event_name=event_name)
     return {"ok": True}
