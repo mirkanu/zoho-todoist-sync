@@ -74,7 +74,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   4. arq retry config: max 3 retries, backoff 5s/15s/60s; `job_timeout=60`; `keep_result=300`; API write failures raise and trigger retry; DB update failures raise and trigger retry (double-write is idempotent)
   5. When this service creates a new Todoist task, the resulting `item:added` webhook is identified as sync-managed (footer present) and suppressed without triggering a reverse sync
 **Plans**: 2 plans
-  - [ ] 05-01-PLAN.md — app/worker/jobs.py: sync_task pipeline with SETNX lock, SELECT FOR UPDATE, canonical-hash compare, LWW, Retry backoff (LOOP-1, LOOP-3, LOOP-5, SYNC-11)
+  - [x] 05-01-PLAN.md — app/worker/jobs.py: sync_task pipeline with SETNX lock, SELECT FOR UPDATE, canonical-hash compare, LWW, Retry backoff (LOOP-1, LOOP-3, LOOP-5, SYNC-11)
   - [ ] 05-02-PLAN.md — app/worker/{settings,__main__,enqueue}.py: WorkerSettings + lifecycle hooks + enqueue_sync helper with dedup + defer (INFRA-1, INFRA-3, SYNC-10, LOOP-4)
 
 ### Phase 6: Webhooks
