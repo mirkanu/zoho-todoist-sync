@@ -59,7 +59,9 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   3. `complete_todoist_task` and `complete_zoho_task` close the task in the respective system; `ZOHO_TERMINAL_STATUSES` is used (not a hardcoded `"Completed"` string)
   4. `delete_zoho_task` is called when a Todoist task is deleted; `delete_todoist_task` is called when a Zoho task is reassigned away; both send a Resend email notification to `manuelkuhs@gmail.com`; Resend failure is logged but does not roll back the deletion
   5. All write functions are idempotent: calling them twice with the same data produces the same result and does not duplicate records or emails
-**Plans**: TBD
+**Plans**: 2 plans
+  - [ ] 04-01-PLAN.md — app/todoist/writer.py (create/update/complete/delete) + Resend api_key in lifespan + tests (SYNC-1, SYNC-2, SYNC-8, EDGE-1, EDGE-3, EDGE-6, EDGE-7)
+  - [ ] 04-02-PLAN.md — app/zoho/writer.py (update/complete/delete/write_todoist_id_to_zoho) + tests (SYNC-3, SYNC-6, EDGE-2, EDGE-3, EDGE-4, EDGE-6)
 
 ### Phase 5: arq Worker
 **Goal**: The `sync_task` job ties together fetch, hash check, write, and DB update into a single reliable unit — with deduplication, per-task locking, and correct retry behaviour
@@ -114,7 +116,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 | 1. Foundation | 3/3 | Complete | 2026-04-23 |
 | 2. Zoho Read | 2/2 | Complete | 2026-04-24 |
 | 3. Todoist Read | 0/3 | Not started | - |
-| 4. Write Operations | 0/TBD | Not started | - |
+| 4. Write Operations | 0/2 | Not started | - |
 | 5. arq Worker | 0/TBD | Not started | - |
 | 6. Webhooks | 0/TBD | Not started | - |
 | 7. Reconciliation & Orphan Detection | 0/TBD | Not started | - |
