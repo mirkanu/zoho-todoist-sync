@@ -41,15 +41,19 @@ def test_redis_settings_from_dsn(complete_env):
 # ---------------------------------------------------------------------------
 
 def test_sync_task_registered_with_correct_func_config(complete_env):
-    """WorkerSettings.functions wraps sync_task with timeout=60, keep_result=300, max_tries=4."""
+    """WorkerSettings.functions wraps sync_task with timeout=60, keep_result=300, max_tries=4.
+
+    arq's Function dataclass stores these as timeout_s and keep_result_s (in seconds).
+    """
     import importlib
     import app.worker.settings as ws_mod
     importlib.reload(ws_mod)
     functions = ws_mod.WorkerSettings.functions
     assert len(functions) == 1
     fn = functions[0]
-    assert fn.timeout == 60
-    assert fn.keep_result == 300
+    # arq Function stores timeout as timeout_s and keep_result as keep_result_s
+    assert fn.timeout_s == 60
+    assert fn.keep_result_s == 300
     assert fn.max_tries == 4
 
 
