@@ -106,6 +106,11 @@ async def lifespan(app: FastAPI):
         await startup_sync(todoist_client, session_factory, settings)
     except Exception:
         await todoist_client.close()  # prevent httpx client leak on boot failure
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except (asyncio.CancelledError, Exception):
+            pass
         raise
     app.state.todoist_client = todoist_client
 
