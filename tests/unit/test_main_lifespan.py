@@ -75,6 +75,12 @@ def _patched_lifespan(monkeypatch, complete_env):
         pass
     monkeypatch.setattr("app.main.startup_sync", fake_startup_sync)
 
+    # Stub ArqRedis pool creation so tests don't attempt a real Redis connection.
+    fake_redis = AsyncMock()
+    fake_redis.aclose = AsyncMock()
+    fake_create_pool = AsyncMock(return_value=fake_redis)
+    monkeypatch.setattr("app.main.create_pool", fake_create_pool)
+
     return {
         "load_mock": load_mock,
         "refresh_mock": refresh_mock,
@@ -218,6 +224,11 @@ async def test_lifespan_initialises_todoist_client_and_runs_startup_sync(
     async def fake_startup_sync(client, factory, settings):
         startup_sync_calls.append((client, factory, settings))
     monkeypatch.setattr("app.main.startup_sync", fake_startup_sync)
+
+    # Stub ArqRedis pool so no real Redis connection is attempted.
+    fake_redis = AsyncMock()
+    fake_redis.aclose = AsyncMock()
+    monkeypatch.setattr("app.main.create_pool", AsyncMock(return_value=fake_redis))
 
     # Run the lifespan
     from app.main import lifespan

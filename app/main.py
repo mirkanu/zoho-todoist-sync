@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import resend
+from arq.connections import RedisSettings, create_pool
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -14,6 +15,7 @@ from app.todoist.client import TodoistClient
 from app.todoist.sync_manager import startup_sync
 from app.zoho.client import ZohoClient
 from app.zoho.state import token_state, zoho_field_cache
+from app.webhooks.router import router as webhooks_router
 from app.zoho.token_manager import (
     KV_ACCESS_TOKEN_KEY,
     KV_EXPIRES_AT_KEY,
@@ -107,6 +109,12 @@ async def lifespan(app: FastAPI):
         raise
     app.state.todoist_client = todoist_client
 
+    # 5. Create ArqRedis pool for webhook job enqueue (Phase 6).
+    redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    app.state.redis = redis
+    # Store session_factory so webhook handlers can reuse it (Phase 6 Todoist lookup).
+    app.state.session_factory = session_factory
+
     yield
 
     # Shutdown: cancel the refresh task.
@@ -117,8 +125,11 @@ async def lifespan(app: FastAPI):
         pass
     # Close the Todoist HTTP client (frees httpx.AsyncClient).
     await app.state.todoist_client.close()
+    # Close the ArqRedis pool (Phase 6).
+    await app.state.redis.aclose()
     await engine.dispose()
     log.info("shutdown")
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(webhooks_router, prefix="/webhooks", tags=["webhooks"])
