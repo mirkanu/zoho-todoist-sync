@@ -88,7 +88,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   4. Both endpoints return HTTP 200 before any database or API I/O; the only synchronous operations are payload parsing and HMAC verification
 **Plans**: 2 plans
   - [x] 06-01-PLAN.md — app/webhooks package + Zoho handler + lifespan ArqRedis pool & session_factory wiring + router mount (SYNC-4, INFRA-1, INFRA-4)
-  - [ ] 06-02-PLAN.md — Todoist handler: raw-body HMAC-SHA256 verification, event dispatch, footer check, sync_state lookup (SYNC-8, LOOP-5, EDGE-7, EDGE-8, INFRA-1)
+  - [x] 06-02-PLAN.md — Todoist handler: raw-body HMAC-SHA256 verification, event dispatch, footer check, sync_state lookup (SYNC-8, LOOP-5, EDGE-7, EDGE-8, INFRA-1)
 
 ### Phase 7: Reconciliation & Orphan Detection
 **Goal**: Missed webhooks, dropped jobs, and orphaned task pairs are detected and resolved automatically without human intervention
