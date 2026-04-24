@@ -9,6 +9,7 @@ Mirrors app.todoist.client conventions:
 from __future__ import annotations
 
 from datetime import date
+from typing import NoReturn
 
 import httpx
 import resend
@@ -26,7 +27,7 @@ from app.todoist.client import (
 log = get_logger(__name__)
 
 
-def _raise_typed(status: int, context: str, cause: Exception) -> None:
+def _raise_typed(status: int, context: str, cause: Exception) -> NoReturn:
     if status == 401:
         raise TodoistAuthError(f"401 Unauthorized — {context}") from cause
     if status == 404:
@@ -55,6 +56,8 @@ async def create_todoist_task(
         )
     except httpx.HTTPStatusError as exc:
         _raise_typed(exc.response.status_code, f"add_task zoho:{zoho_task_id}", exc)
+    except Exception:
+        raise  # let unexpected errors propagate cleanly without unbound `task`
     log.info("todoist_task_created", zoho_id=zoho_task_id, todoist_id=task.id)
     return task.id
 
