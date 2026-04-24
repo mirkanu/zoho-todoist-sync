@@ -45,8 +45,8 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   3. `extract_zoho_id(description)` correctly parses `[zoho:(\d+)]` from any position in the description, returns `None` for tasks without the footer, and is verified by unit tests covering missing footer, footer mid-text, and footer after user edits
   4. `item:added` events for tasks without a `[zoho:ID]` footer are logged and discarded; tasks without the footer that arrive via the Sync API delta are ignored
 **Plans**: 3 plans
-  - [ ] 03-01-PLAN.md — app/todoist/normalise.py: extract_zoho_id() + todoist_task_to_normalised() adapter + unit tests (SYNC-5, SYNC-8, SYNC-9)
-  - [ ] 03-02-PLAN.md — app/todoist/client.py: TodoistClient wrapping TodoistAPIAsync + typed exceptions + fetch_sync_delta with client-side project filter (SYNC-5, SYNC-8)
+  - [x] 03-01-PLAN.md — app/todoist/normalise.py: extract_zoho_id() + todoist_task_to_normalised() adapter + unit tests (SYNC-5, SYNC-8, SYNC-9)
+  - [x] 03-02-PLAN.md — app/todoist/client.py: TodoistClient wrapping TodoistAPIAsync + typed exceptions + fetch_sync_delta with client-side project filter (SYNC-5, SYNC-8)
   - [ ] 03-03-PLAN.md — app/todoist/sync_manager.py: load/save sync_token + startup_sync + FastAPI lifespan wiring (SEED-7, SYNC-8)
 
 ### Phase 4: Write Operations
