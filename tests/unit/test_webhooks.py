@@ -381,7 +381,7 @@ def test_todoist_hmac_uses_raw_body_not_parsed_json(webhook_client):
 def test_todoist_hmac_compare_uses_compare_digest():
     """Code-level invariant: hmac.compare_digest used; == comparison forbidden (T-06-10)."""
     import pathlib
-    src = pathlib.Path("app/webhooks/router.py").read_text()
+    src = (pathlib.Path(__file__).parents[2] / "app" / "webhooks" / "router.py").read_text()
     assert "hmac.compare_digest" in src, "Todoist HMAC must use hmac.compare_digest"
     # Anti-regression: forbid == comparison on hmac/expected identifiers.
     forbidden = [
