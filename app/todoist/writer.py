@@ -12,11 +12,11 @@ from datetime import date
 from typing import NoReturn
 
 import httpx
-import resend
 from todoist_api_python.api_async import TodoistAPIAsync
 
 from app.core.logging import get_logger
 from app.core.normalise import NormalisedTask
+from app.core.notifications import send_deletion_notification
 from app.todoist.client import (
     TodoistAPIError,
     TodoistAuthError,
@@ -106,23 +106,8 @@ async def delete_todoist_task(task_id: str, todoist_api: TodoistAPIAsync) -> Non
             return  # already gone — do NOT send email (Pitfall 5)
         _raise_typed(exc.response.status_code, f"delete_task {task_id}", exc)
     log.info("todoist_task_deleted", todoist_id=task_id)
-    await _send_deletion_notification(
+    await send_deletion_notification(
         subject=f"[zoho-todoist-sync] Todoist task deleted: {task_id}",
         html=f"<p>Todoist task <code>{task_id}</code> was deleted by the sync service "
              f"(propagation from Zoho reassignment or direct deletion).</p>",
     )
-
-
-async def _send_deletion_notification(subject: str, html: str) -> None:
-    """Fire-and-forget Resend email. EDGE-6: failure logged, NOT re-raised."""
-    try:
-        params: resend.Emails.SendParams = {
-            "from": "sync-alerts@resend.dev",  # A3: replace with verified domain in Phase 8 ops review
-            "to": ["manuelkuhs@gmail.com"],
-            "subject": subject,
-            "html": html,
-        }
-        await resend.Emails.send_async(params)
-    except Exception as exc:
-        log.error("resend_email_failed", error=str(exc))
-        # Do NOT re-raise — EDGE-6.
