@@ -63,6 +63,18 @@ def _patched_lifespan(monkeypatch, complete_env):
         await asyncio.sleep(3600)   # sleeps until cancelled
     monkeypatch.setattr("app.main.proactive_refresh_loop", fake_loop)
 
+    # Stub Todoist wiring so existing tests aren't broken by Task 2 additions.
+    class FakeTodoistClient:
+        def __init__(self, api_token):
+            self.api_token = api_token
+        async def close(self):
+            pass
+    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+
+    async def fake_startup_sync(client, factory, settings):
+        pass
+    monkeypatch.setattr("app.main.startup_sync", fake_startup_sync)
+
     return {
         "load_mock": load_mock,
         "refresh_mock": refresh_mock,
@@ -150,3 +162,125 @@ async def test_lifespan_logs_warn_when_todoist_field_missing(_patched_lifespan, 
             pass
     warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any("zoho_todoist_task_id_field_not_found" in r.getMessage() for r in warn_records)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_initialises_todoist_client_and_runs_startup_sync(
+    monkeypatch, complete_env
+):
+    """TodoistClient constructed and startup_sync called inside lifespan startup."""
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+
+    # Stub every external side effect
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    monkeypatch.setattr("app.main.create_async_engine", lambda *a, **k: fake_engine)
+
+    fake_session = AsyncMock()
+    fake_session.__aenter__.return_value = fake_session
+    fake_session.__aexit__.return_value = None
+    fake_session_factory = MagicMock(return_value=fake_session)
+    monkeypatch.setattr("app.main.async_sessionmaker", lambda *a, **k: fake_session_factory)
+
+    monkeypatch.setattr("app.main.refresh_access_token", AsyncMock(
+        return_value=("tok", datetime.now(timezone.utc))
+    ))
+    monkeypatch.setattr("app.main.load_token_from_kv", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr("app.main.upsert_kv", AsyncMock())
+
+    meta_mock = AsyncMock(return_value={
+        "todoist_task_id_api_name": "Todoist_Task_ID",
+        "status_picklist_values": ["Completed"],
+    })
+    class FakeZohoClient:
+        def __init__(self, access_token): pass
+        async def get_fields_metadata(self, module="Tasks"):
+            return await meta_mock(module)
+    monkeypatch.setattr("app.main.ZohoClient", FakeZohoClient)
+
+    async def fake_loop(ts, sf):
+        await asyncio.sleep(3600)
+    monkeypatch.setattr("app.main.proactive_refresh_loop", fake_loop)
+
+    # Track Todoist wiring
+    todoist_constructions = []
+    class FakeTodoistClient:
+        def __init__(self, api_token):
+            todoist_constructions.append(api_token)
+            self.closed = False
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+
+    startup_sync_calls = []
+    async def fake_startup_sync(client, factory, settings):
+        startup_sync_calls.append((client, factory, settings))
+    monkeypatch.setattr("app.main.startup_sync", fake_startup_sync)
+
+    # Run the lifespan
+    from app.main import lifespan
+    app = FastAPI()
+    async with lifespan(app):
+        # Assertions inside running lifespan
+        assert len(todoist_constructions) == 1
+        assert todoist_constructions[0]  # non-empty token passed
+        assert len(startup_sync_calls) == 1
+        assert hasattr(app.state, "todoist_client")
+        assert isinstance(app.state.todoist_client, FakeTodoistClient)
+    # After context exit, close was awaited
+    assert app.state.todoist_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_lifespan_startup_sync_failure_propagates(monkeypatch, complete_env):
+    """If startup_sync raises, the lifespan startup fails loudly (SYNC-5)."""
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    monkeypatch.setattr("app.main.create_async_engine", lambda *a, **k: fake_engine)
+
+    fake_session = AsyncMock()
+    fake_session.__aenter__.return_value = fake_session
+    fake_session.__aexit__.return_value = None
+    fake_session_factory = MagicMock(return_value=fake_session)
+    monkeypatch.setattr("app.main.async_sessionmaker", lambda *a, **k: fake_session_factory)
+
+    monkeypatch.setattr("app.main.refresh_access_token", AsyncMock(
+        return_value=("tok", datetime.now(timezone.utc))
+    ))
+    monkeypatch.setattr("app.main.load_token_from_kv", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr("app.main.upsert_kv", AsyncMock())
+
+    meta_mock = AsyncMock(return_value={
+        "todoist_task_id_api_name": "Todoist_Task_ID",
+        "status_picklist_values": ["Completed"],
+    })
+    class FakeZohoClient:
+        def __init__(self, access_token): pass
+        async def get_fields_metadata(self, module="Tasks"):
+            return await meta_mock(module)
+    monkeypatch.setattr("app.main.ZohoClient", FakeZohoClient)
+
+    async def fake_loop(ts, sf):
+        await asyncio.sleep(3600)
+    monkeypatch.setattr("app.main.proactive_refresh_loop", fake_loop)
+
+    class FakeTodoistClient:
+        def __init__(self, api_token): pass
+        async def close(self): pass
+    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+
+    from app.todoist.client import TodoistAuthError
+    async def failing_startup_sync(*a, **kw):
+        raise TodoistAuthError("bad token")
+    monkeypatch.setattr("app.main.startup_sync", failing_startup_sync)
+
+    from app.main import lifespan
+    app = FastAPI()
+    with pytest.raises(TodoistAuthError):
+        async with lifespan(app):
+            pass
