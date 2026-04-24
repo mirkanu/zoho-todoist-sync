@@ -4,6 +4,7 @@ Covers:
   - SYNC-4: Zoho notification-only webhook (enqueue, 400 validation, ids normalisation)
   - INFRA-1: ArqRedis pool wired on app.state.redis at startup
   - INFRA-4: Both /webhooks/zoho and /webhooks/todoist routes registered
+  - INFRA-1 / SYNC-8 / LOOP-5 / EDGE-7 / EDGE-8: Todoist HMAC + event dispatch (Plan 02)
 """
 import base64
 import hashlib
@@ -37,6 +38,33 @@ def webhook_client(complete_env):
     app.state.session_factory = MagicMock()
     # TestClient with raise_server_exceptions=True surfaces real errors.
     return TestClient(app, raise_server_exceptions=True)
+
+
+# ---------------------------------------------------------------------------
+# Helper: HMAC signature for Todoist webhook requests
+# ---------------------------------------------------------------------------
+
+def _make_hmac(body: bytes, secret: str = "test-todoist-client-secret") -> str:
+    """Compute base64-encoded HMAC-SHA256 over raw body bytes."""
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Helper: mock session_factory returning a given zoho_id (or None)
+# ---------------------------------------------------------------------------
+
+def _mock_session_factory_returning(zoho_id: str | None):
+    """Return a mock session_factory whose session.execute returns zoho_id via scalar_one_or_none."""
+    sess = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=zoho_id)
+    sess.execute = AsyncMock(return_value=result)
+    ctx_mgr = AsyncMock()
+    ctx_mgr.__aenter__ = AsyncMock(return_value=sess)
+    ctx_mgr.__aexit__ = AsyncMock(return_value=None)
+    factory = MagicMock(return_value=ctx_mgr)
+    return factory
 
 
 # ---------------------------------------------------------------------------
@@ -258,15 +286,406 @@ async def test_lifespan_wires_arq_redis_and_session_factory(monkeypatch, complet
 
 
 # ---------------------------------------------------------------------------
-# Todoist stub — permissive (Plan 02 tightens to 401)
+# Todoist — Plan 02: HMAC enforcement (replaces permissive Plan 01 stub test)
 # ---------------------------------------------------------------------------
 
-def test_todoist_webhook_stub_returns_200_without_side_effects(webhook_client):
-    """Todoist stub returns 200 (Plan 01) or 401 (Plan 02 HMAC); no side effects."""
+def test_todoist_webhook_without_hmac_returns_401_post_plan02(webhook_client):
+    """After Plan 02, a body with no HMAC returns 401 (not 200).
+
+    Replaces the Plan 01 permissive stub test which allowed (200, 401).
+    """
     with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
         resp = webhook_client.post(
             "/webhooks/todoist",
             json={"event_name": "item:completed", "event_data": {"id": "12345"}},
         )
-    assert resp.status_code in (200, 401)
+    assert resp.status_code == 401
     mock_enqueue.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# INFRA-1 / T-06-09: HMAC verification
+# ---------------------------------------------------------------------------
+
+def test_todoist_invalid_hmac_returns_401(webhook_client):
+    """Bad HMAC header → 401; no enqueue; no DB lookup."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z1")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:updated",
+        "event_data": {"id": "T1", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={
+                "X-Todoist-Hmac-SHA256": "definitely-not-valid-base64-hmac==",
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 401
+    mock_enqueue.assert_not_awaited()
+    session_factory.assert_not_called()
+
+
+def test_todoist_no_hmac_header_returns_401(webhook_client):
+    """No X-Todoist-Hmac-SHA256 header at all → 401."""
+    raw_body = json.dumps({
+        "event_name": "item:updated",
+        "event_data": {"id": "T1", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status_code == 401
+    mock_enqueue.assert_not_awaited()
+
+
+def test_todoist_hmac_uses_raw_body_not_parsed_json(webhook_client):
+    """HMAC is computed over raw wire bytes, NOT re-serialised parsed JSON (Pitfall 1).
+
+    The raw body has non-default whitespace that json.dumps would not reproduce.
+    If the handler re-serialises, the HMAC will not match and the test sees 401.
+    Signing the exact wire bytes and getting 200 proves the handler used raw bytes.
+    """
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z-raw-body")
+    app.state.session_factory = session_factory
+
+    # Non-default whitespace after colons/commas — json.dumps won't produce this.
+    raw_body = b'{  "event_name": "item:updated",   "event_data":{"id":"1","project_id":"6gCPcWwM392GhXQh"}}'
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={
+                "X-Todoist-Hmac-SHA256": sig,
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 200, (
+        "Expected 200 (HMAC matched raw bytes). If 401, handler re-serialised JSON."
+    )
+
+
+def test_todoist_hmac_compare_uses_compare_digest():
+    """Code-level invariant: hmac.compare_digest used; == comparison forbidden (T-06-10)."""
+    import pathlib
+    src = pathlib.Path("app/webhooks/router.py").read_text()
+    assert "hmac.compare_digest" in src, "Todoist HMAC must use hmac.compare_digest"
+    # Anti-regression: forbid == comparison on hmac/expected identifiers.
+    forbidden = [
+        "expected == received", "received == expected",
+        "expected==received", "received==expected",
+    ]
+    for pattern in forbidden:
+        assert pattern not in src, f"Found timing-vulnerable comparison: {pattern}"
+
+
+# ---------------------------------------------------------------------------
+# SYNC-8: item:added without footer discarded
+# ---------------------------------------------------------------------------
+
+def test_todoist_item_added_no_footer_discarded(webhook_client):
+    """item:added with no [zoho:ID] footer → 200, no enqueue, no DB lookup (SYNC-8)."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning(None)
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:added",
+        "event_data": {"id": "999", "project_id": "6gCPcWwM392GhXQh", "description": "no footer here"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_not_awaited()
+    session_factory.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# LOOP-5: item:added with footer enqueues (skips DB lookup)
+# ---------------------------------------------------------------------------
+
+def test_todoist_item_added_with_footer_enqueues(webhook_client):
+    """item:added with [zoho:ID] footer → enqueue with zoho_id; no DB lookup (LOOP-5)."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning(None)
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:added",
+        "event_data": {
+            "id": "999",
+            "project_id": "6gCPcWwM392GhXQh",
+            "description": "body\n\n---\n[zoho:4567890]",
+        },
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_awaited_once()
+    args, kwargs = mock_enqueue.call_args
+    assert args[1] == "4567890"
+    assert kwargs.get("defer_secs") == 0
+    session_factory.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# item:updated, item:completed, item:uncompleted — DB lookup + enqueue
+# ---------------------------------------------------------------------------
+
+def test_todoist_item_updated_enqueues(webhook_client):
+    """item:updated → DB lookup → enqueue(zoho_id, defer_secs=0)."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z1")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:updated",
+        "event_data": {"id": "T1", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        response = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={
+                "X-Todoist-Hmac-SHA256": sig,
+                "Content-Type": "application/json",
+            },
+        )
+    assert response.status_code == 200
+    mock_enqueue.assert_awaited_once()
+    args, kwargs = mock_enqueue.call_args
+    assert args[1] == "Z1"
+    assert kwargs.get("defer_secs") == 0
+    session_factory.assert_called_once()
+
+
+def test_todoist_item_completed_enqueues(webhook_client):
+    """item:completed → DB lookup → enqueue (EDGE-7: completion propagates to Zoho)."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z2")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:completed",
+        "event_data": {"id": "T2", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_awaited_once()
+    args, kwargs = mock_enqueue.call_args
+    assert args[1] == "Z2"
+    assert kwargs.get("defer_secs") == 0
+
+
+def test_todoist_item_uncompleted_enqueues(webhook_client):
+    """item:uncompleted → DB lookup → enqueue."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z3")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:uncompleted",
+        "event_data": {"id": "T3", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_awaited_once()
+    args, kwargs = mock_enqueue.call_args
+    assert args[1] == "Z3"
+    assert kwargs.get("defer_secs") == 0
+
+
+# ---------------------------------------------------------------------------
+# item:deleted
+# ---------------------------------------------------------------------------
+
+def test_todoist_item_deleted_enqueues_when_sync_state_exists(webhook_client):
+    """item:deleted with sync_state row → enqueue(zoho_id, defer_secs=0)."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z4")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:deleted",
+        "event_data": {"id": "T4", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_awaited_once()
+    args, kwargs = mock_enqueue.call_args
+    assert args[1] == "Z4"
+    assert kwargs.get("defer_secs") == 0
+
+
+def test_todoist_item_deleted_no_sync_state_logs_and_returns_200(webhook_client):
+    """item:deleted with no sync_state row → 200, no enqueue."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning(None)
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:deleted",
+        "event_data": {"id": "T5", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# EDGE-8: Missing sync_state for updated/completed/uncompleted
+# ---------------------------------------------------------------------------
+
+def test_todoist_missing_footer_on_synced_task(webhook_client):
+    """item:updated with no sync_state row → 200, no enqueue (EDGE-8 proxy)."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning(None)
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:updated",
+        "event_data": {"id": "T-no-state", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Wrong project_id → discard without DB lookup
+# ---------------------------------------------------------------------------
+
+def test_todoist_wrong_project_id_discarded(webhook_client):
+    """event_data.project_id != configured project → 200, no enqueue, no DB."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z-other")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:updated",
+        "event_data": {"id": "T-other", "project_id": "OTHER_PROJECT"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_not_awaited()
+    session_factory.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Unknown event_name → 200 (DEBUG log, no action)
+# ---------------------------------------------------------------------------
+
+def test_todoist_unknown_event_name_returns_200(webhook_client):
+    """Unknown event_name → 200, no enqueue."""
+    raw_body = json.dumps({
+        "event_name": "item:changed_somehow_new",
+        "event_data": {"id": "T-unknown", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# A2: event_data.id as int is coerced via str() (T-06-14)
+# ---------------------------------------------------------------------------
+
+def test_todoist_event_data_id_as_int_tolerated(webhook_client):
+    """event_data.id as int (not string) → str() coercion → enqueue works (T-06-14)."""
+    from app.main import app
+    session_factory = _mock_session_factory_returning("Z-int")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:updated",
+        "event_data": {"id": 12345, "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+        resp = webhook_client.post(
+            "/webhooks/todoist",
+            content=raw_body,
+            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_enqueue.assert_awaited_once()
+    args, kwargs = mock_enqueue.call_args
+    assert args[1] == "Z-int"
+    assert kwargs.get("defer_secs") == 0
