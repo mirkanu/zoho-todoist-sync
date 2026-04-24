@@ -437,8 +437,10 @@ async def test_retry_on_zoho_rate_limit_uses_correct_delay(complete_env):
         with pytest.raises(Retry) as exc_info:
             await sync_task(ctx, f"Z{job_try}")
 
-        assert exc_info.value.defer == expected_delay, (
-            f"job_try={job_try}: expected defer={expected_delay}, got {exc_info.value.defer}"
+        # arq Retry stores defer_score in milliseconds (seconds * 1000)
+        actual_delay_secs = exc_info.value.defer_score / 1000
+        assert actual_delay_secs == expected_delay, (
+            f"job_try={job_try}: expected defer={expected_delay}s, got {actual_delay_secs}s"
         )
 
 
