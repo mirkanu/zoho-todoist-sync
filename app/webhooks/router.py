@@ -118,12 +118,20 @@ async def todoist_webhook(request: Request):
     # Project isolation gate (Pitfall 6). Todoist webhooks fire for ALL account
     # tasks; filter to the configured sync project at the edge to avoid
     # spurious DB lookups.
-    if event_data.get("project_id") != settings.todoist_project_id:
+    raw_project_id = event_data.get("project_id")
+    if raw_project_id is None:
+        log.warning(
+            "todoist_event_missing_project_id",
+            event_name=event_name,
+            todoist_task_id=todoist_task_id,
+        )
+        return {"ok": True}
+    if str(raw_project_id) != str(settings.todoist_project_id):
         log.debug(
             "todoist_event_wrong_project",
             event_name=event_name,
             todoist_task_id=todoist_task_id,
-            project_id=event_data.get("project_id"),
+            project_id=raw_project_id,
         )
         return {"ok": True}
 
