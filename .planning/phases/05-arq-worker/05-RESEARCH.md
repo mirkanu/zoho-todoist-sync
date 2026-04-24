@@ -31,6 +31,7 @@ Loop-suppression (`LOOP-5`) for self-created Todoist tasks is already partially 
 | Retry / backoff | arq + Redis | — | `raise Retry(defer=N)` inside job; arq stores retry state in Redis |
 | Worker process lifecycle | arq `WorkerSettings` | Railway | `run_worker(WorkerSettings)` as the `worker` Railway service command |
 | Deferred start (stale-read mitigation) | arq (`_defer_by`) | Worker | 2-second defer set at enqueue time by caller, not inside job |
+| Worker token freshness | Worker `on_startup` | kv_store (Postgres) | `proactive_refresh_loop` running in worker keeps in-memory token + kv_store in lockstep |
 
 ---
 
@@ -139,12 +140,15 @@ from app.worker.jobs import sync_task
 from app.core.config import get_settings
 
 async def on_startup(ctx: dict) -> None:
+    import asyncio
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from app.zoho.client import ZohoClient
     from app.zoho.state import token_state
+    from app.zoho.token_manager import proactive_refresh_loop
     settings = get_settings()
     engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-    ctx["session_factory"] = async_sessionmaker(engine, expire_on_commit=False)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    ctx["session_factory"] = session_factory
     ctx["engine"] = engine
     # ZohoClient uses in-memory token_state (shared with web service via startup)
     ctx["zoho_client"] = ZohoClient(access_token=token_state["access_token"])
@@ -152,8 +156,20 @@ async def on_startup(ctx: dict) -> None:
     from app.todoist.client import TodoistClient
     todoist_client = TodoistClient(api_token=settings.todoist_api_token)
     ctx["todoist_client"] = todoist_client
+    # Keep the in-memory token fresh while the worker runs (resolves Open Q1).
+    ctx["_refresh_task"] = asyncio.create_task(
+        proactive_refresh_loop(token_state, session_factory)
+    )
 
 async def on_shutdown(ctx: dict) -> None:
+    # Cancel the refresh loop cleanly before disposing the engine/clients.
+    refresh_task = ctx.get("_refresh_task")
+    if refresh_task is not None:
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except (asyncio.CancelledError, Exception):
+            pass
     await ctx["todoist_client"].close()
     await ctx["engine"].dispose()
 
@@ -333,6 +349,7 @@ if __name__ == "__main__":
 - **Not releasing SETNX lock on exception:** Always use `try/finally` around the lock body. If the job raises, arq will retry but the lock must be released before the retry fires (the 30s TTL is the safety net if the worker crashes before the finally block).
 - **Creating a new Redis pool in on_startup:** arq injects `ctx["redis"]` (the `ArqRedis` pool) automatically. Creating a second pool wastes connections.
 - **Hardcoding max_tries=5:** arq's default is 5; set `max_tries=4` explicitly in `func()` to honour the "3 retries" requirement.
+- **Loading the Zoho token once in on_startup and never refreshing:** Worker processes stay up for hours; the access token expires after ~55 min. `on_startup` must launch `proactive_refresh_loop` as a background task so `token_state["access_token"]` (which `ZohoClient` reads) stays current.
 
 ---
 
@@ -345,6 +362,7 @@ if __name__ == "__main__":
 | Worker lifecycle (startup/shutdown hooks) | Module-level globals with atexit handlers | `on_startup` / `on_shutdown` in `WorkerSettings` | arq guarantees these run before any job executes / after all jobs complete |
 | Redis URL parsing | `urllib.parse.urlparse(redis_url)` manually | `RedisSettings.from_dsn(url)` | arq already has a correct DSN parser that handles `redis://`, `rediss://`, unix sockets |
 | Per-function timeout/retries | Try/except with manual timeout | `func(sync_task, timeout=60, max_tries=4)` | arq wraps the coroutine in an asyncio task with a deadline; cleaner than manual |
+| Worker-side Zoho token refresh | Custom asyncio loop inside jobs.py | `proactive_refresh_loop` (Phase 2) launched via `asyncio.create_task` in `on_startup` | Already production-tested in the web service; reuse unchanged |
 
 **Key insight:** arq's `_job_id` dedup is Redis-transactional (uses MULTI/EXEC pipeline). Don't replicate this with a separate SETNX before enqueue — that would be a redundant and fragile check outside the transaction.
 
@@ -381,6 +399,12 @@ if __name__ == "__main__":
 ### Pitfall 6: LWW direction when both sides changed
 **What goes wrong:** If both `zoho_hash != last_hash` and `todoist_hash != last_hash`, the developer writes to both targets, causing a loop.
 **How to avoid:** When both have changed (true simultaneous edit), pick one side as the winner (Zoho wins in this project — it's the source of truth), write to Todoist only, log `action='overwrite'`. The resulting hash suppresses the echo on the next webhook.
+
+### Pitfall 7: Worker in-memory token goes stale after ~55 min
+**What goes wrong:** `on_startup` loads the Zoho access token once. After ~55 minutes the token expires. Every subsequent `ZohoClient.get_task` call hits 401, burns all 4 retry attempts, and permanently fails jobs.
+**Why it happens:** The web service runs `proactive_refresh_loop`; the worker's author assumed token rotation is "someone else's problem."
+**How to avoid:** In `on_startup`, launch `proactive_refresh_loop(token_state, session_factory)` as an `asyncio.create_task` and stash the task handle in `ctx["_refresh_task"]`. In `on_shutdown`, cancel and await the task before disposing the engine. Because `ZohoClient.access_token` reads from the shared `token_state` dict by reference (Phase 2 design), the refresh loop's writes are picked up automatically on the next API call.
+**Warning signs:** Worker logs show `ZohoAuthError` bursts every ~55 minutes.
 
 ---
 
@@ -528,6 +552,7 @@ async def _execute_sync(zoho_task_id, session_factory, zoho_client, todoist_clie
 
 ```python
 # app/worker/settings.py [VERIFIED: arq 0.28.0]
+import asyncio
 from arq import func
 from arq.connections import RedisSettings
 from app.core.config import get_settings
@@ -542,6 +567,7 @@ async def on_startup(ctx: dict) -> None:
     from app.zoho.token_manager import (
         KV_ACCESS_TOKEN_KEY, KV_EXPIRES_AT_KEY,
         load_token_from_kv, refresh_access_token, upsert_kv,
+        proactive_refresh_loop,
     )
     from datetime import datetime, timezone
 
@@ -571,8 +597,20 @@ async def on_startup(ctx: dict) -> None:
     ctx["zoho_client"] = ZohoClient(access_token=access_token)
     ctx["todoist_client"] = TodoistClient(api_token=settings.todoist_api_token)
 
+    # Keep in-memory token fresh for the lifetime of the worker (Open Q1 resolution).
+    ctx["_refresh_task"] = asyncio.create_task(
+        proactive_refresh_loop(token_state, session_factory)
+    )
+
 
 async def on_shutdown(ctx: dict) -> None:
+    refresh_task = ctx.get("_refresh_task")
+    if refresh_task is not None:
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except (asyncio.CancelledError, Exception):
+            pass
     await ctx["todoist_client"].close()
     await ctx["engine"].dispose()
 
@@ -608,24 +646,27 @@ class WorkerSettings:
 |---|-------|---------|---------------|
 | A1 | Token state written to `kv_store` by the web service is readable by the worker process (both share the same Railway Postgres and the `kv_store` table) | Standard Stack / on_startup pattern | If tokens are only in-memory, worker starts with no valid token. Mitigation: worker's `on_startup` always calls `load_token_from_kv` and refreshes if stale — this handles the case regardless. |
 | A2 | `ZohoClient` and `TodoistClient` are safe to instantiate per-worker-startup (not global singletons) | Architecture Patterns | If either client has module-level initialisation that breaks on second import, worker startup fails. Prior phases use them as simple dataclasses/wrappers — low risk. |
+| A3 | `proactive_refresh_loop` (from Phase 2) is a forever-loop coroutine safe to drive from a single `asyncio.create_task` and cancellable via `task.cancel()` | Pattern 1 on_startup + on_shutdown | If the loop swallows CancelledError or holds non-cancellable awaits, shutdown will hang. Mitigation: on_shutdown wraps `await task` in a try/except that also catches plain Exception. |
 
 **If this table is empty:** All claims in this research were verified or cited — no user confirmation needed.
 
 Assumption A1 is LOW-RISK because the `on_startup` pattern already handles token refresh from scratch if `kv_store` is empty.
 
+Assumption A3 is LOW-RISK because the web service (`app/main.py`) already uses `proactive_refresh_loop` the same way and cleanup works there.
+
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Zoho webhook token vs worker token**
+1. **Zoho webhook token vs worker token** — **RESOLVED**
    - What we know: The web service refreshes the Zoho token proactively every 50 min and writes it to `kv_store`. The worker reads it from `kv_store` on startup.
-   - What's unclear: If the worker stays up for 50+ minutes, its in-memory token goes stale. The web service's proactive refresh loop writes the new token to `kv_store`, but the worker's `ctx["zoho_client"].access_token` is not updated.
-   - Recommendation: In Phase 5, start a lightweight proactive refresh loop inside `on_startup` for the worker process (reuse `proactive_refresh_loop` from `app/zoho/token_manager.py`), or make `ZohoClient.access_token` read from `token_state` dict by reference (already mutable in Phase 2 design). The plan should address this explicitly.
+   - What was unclear: If the worker stays up for 50+ minutes, its in-memory token goes stale. The web service's proactive refresh loop writes the new token to `kv_store`, but the worker's `token_state["access_token"]` is not updated.
+   - **Resolution:** Worker `on_startup` (Plan 02) launches `proactive_refresh_loop(token_state, session_factory)` as a background `asyncio.create_task` and stashes the handle in `ctx["_refresh_task"]`. `on_shutdown` cancels and awaits the task before disposing the engine. Because `ZohoClient` reads `token_state["access_token"]` by reference, refreshes propagate to the client automatically. Codified in Pattern 1, Pitfall 7, and the Plan 02 on_startup action.
 
-2. **Direction of sync when Todoist task is the trigger (Phase 6 wires this)**
+2. **Direction of sync when Todoist task is the trigger** — **RESOLVED (Phase 6 concern)**
    - What we know: `sync_task` receives `zoho_task_id`. If a Todoist change triggers it, the caller must resolve the Zoho task ID from the Todoist task ID (via `sync_state.todoist_task_id` reverse lookup).
-   - What's unclear: Phase 5 `sync_task` needs only `zoho_task_id`; Phase 6 handles the Todoist-webhook-to-zoho-ID resolution. Phase 5 does not need to worry about this.
-   - Recommendation: Document in `sync_task` docstring that the function always works with `zoho_task_id` as the primary key.
+   - What was unclear: Who performs the Todoist-webhook-to-zoho-ID resolution.
+   - **Resolution:** This is explicitly a Phase 6 responsibility and NOT a Phase 5 deliverable. The Phase 5 `sync_task` docstring documents that the function always works with `zoho_task_id` as the primary key; Phase 6 webhook handlers are responsible for the reverse lookup before calling `enqueue_sync`.
 
 ---
 
@@ -661,13 +702,13 @@ Assumption A1 is LOW-RISK because the `on_startup` pattern already handles token
 
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
-| SYNC-10 | `enqueue_job` returns `None` on duplicate → logs WARN | unit | `pytest tests/unit/test_worker_jobs.py::test_enqueue_dedup_logs_warn -x` | No — Wave 0 |
-| SYNC-11 | Simultaneous edit: Zoho wins, `action='overwrite'` logged | unit | `pytest tests/unit/test_worker_jobs.py::test_lww_zoho_wins -x` | No — Wave 0 |
-| LOOP-1 | Incoming hash == `last_hash` → `echo_suppressed`, no write | unit | `pytest tests/unit/test_worker_jobs.py::test_echo_suppressed -x` | No — Wave 0 |
-| LOOP-3 | `SELECT FOR UPDATE` called on `sync_state` row | unit | `pytest tests/unit/test_worker_jobs.py::test_select_for_update_called -x` | No — Wave 0 |
-| LOOP-4 | 2-second defer passed via `_defer_by` at enqueue, NOT sleep inside job | unit | `pytest tests/unit/test_worker_jobs.py::test_enqueue_defer_by -x` | No — Wave 0 |
-| LOOP-5 | Self-created Todoist task with footer → identified as sync-managed, not reverse-synced | unit | `pytest tests/unit/test_worker_jobs.py::test_bootstrap_race_suppressed -x` | No — Wave 0 |
-| INFRA-1 | `app/worker/__main__.py` runs `run_worker(WorkerSettings)` | integration/smoke | `python -m app.worker --burst` (no jobs → exits clean) | No — Wave 0 |
+| SYNC-10 | `enqueue_job` returns `None` on duplicate → logs WARN | unit | `pytest tests/unit/test_worker_settings.py::test_enqueue_sync_dedups -x` | No — Wave 0 |
+| SYNC-11 | Simultaneous edit: Zoho wins, `action='overwrite'` logged | unit | `pytest tests/unit/test_worker_jobs.py::test_lww_zoho_wins_when_both_diverge -x` | No — Wave 0 |
+| LOOP-1 | Incoming hash == `last_hash` → `echo_suppressed`, no write | unit | `pytest tests/unit/test_worker_jobs.py::test_echo_suppressed_when_all_hashes_match -x` | No — Wave 0 |
+| LOOP-3 | `SELECT FOR UPDATE` called on `sync_state` row | unit | `pytest tests/unit/test_worker_jobs.py::test_select_for_update_is_called -x` | No — Wave 0 |
+| LOOP-4 | 2-second defer passed via `_defer_by` at enqueue, NOT sleep inside job | unit | `pytest tests/unit/test_worker_settings.py::test_enqueue_sync_defers_by_zoho_secs -x` | No — Wave 0 |
+| LOOP-5 | Self-created Todoist task with footer → identified as sync-managed, not reverse-synced | unit | `pytest tests/unit/test_worker_jobs.py::test_bootstrap_race_footer_suppressed -x` | No — Wave 0 |
+| INFRA-1 | `app/worker/__main__.py` runs `run_worker(WorkerSettings)` | unit | `pytest tests/unit/test_worker_settings.py::test_main_module_calls_run_worker -x` | No — Wave 0 |
 | INFRA-3 | `RedisSettings.from_dsn(redis_url)` used in `WorkerSettings` | unit | `pytest tests/unit/test_worker_settings.py::test_redis_settings_from_dsn -x` | No — Wave 0 |
 
 ### Sampling Rate
@@ -678,12 +719,13 @@ Assumption A1 is LOW-RISK because the `on_startup` pattern already handles token
 
 ### Wave 0 Gaps
 
-- [ ] `tests/unit/test_worker_jobs.py` — covers SYNC-10, SYNC-11, LOOP-1, LOOP-3, LOOP-4, LOOP-5
-- [ ] `tests/unit/test_worker_settings.py` — covers INFRA-3
+- [ ] `tests/unit/test_worker_jobs.py` — covers SYNC-11, LOOP-1, LOOP-3, LOOP-5
+- [ ] `tests/unit/test_worker_settings.py` — covers INFRA-1, INFRA-3, SYNC-10, LOOP-4
 - [ ] `app/worker/__init__.py` — package marker
 - [ ] `app/worker/__main__.py` — Railway entry point
 - [ ] `app/worker/settings.py` — `WorkerSettings` class
 - [ ] `app/worker/jobs.py` — `sync_task` function
+- [ ] `app/worker/enqueue.py` — `enqueue_sync` helper
 
 ---
 

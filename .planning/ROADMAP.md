@@ -73,7 +73,9 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   3. Zoho-webhook-triggered jobs defer by 2 seconds (configurable via `ZOHO_JOB_DEFER_SECS`) before the Zoho API fetch, reducing the stale-read race window
   4. arq retry config: max 3 retries, backoff 5s/15s/60s; `job_timeout=60`; `keep_result=300`; API write failures raise and trigger retry; DB update failures raise and trigger retry (double-write is idempotent)
   5. When this service creates a new Todoist task, the resulting `item:added` webhook is identified as sync-managed (footer present) and suppressed without triggering a reverse sync
-**Plans**: TBD
+**Plans**: 2 plans
+  - [ ] 05-01-PLAN.md — app/worker/jobs.py: sync_task pipeline with SETNX lock, SELECT FOR UPDATE, canonical-hash compare, LWW, Retry backoff (LOOP-1, LOOP-3, LOOP-5, SYNC-11)
+  - [ ] 05-02-PLAN.md — app/worker/{settings,__main__,enqueue}.py: WorkerSettings + lifecycle hooks + enqueue_sync helper with dedup + defer (INFRA-1, INFRA-3, SYNC-10, LOOP-4)
 
 ### Phase 6: Webhooks
 **Goal**: FastAPI webhook endpoints for both Zoho and Todoist are live, validate payloads, and enqueue jobs within milliseconds — no sync logic lives in the handlers
@@ -117,7 +119,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 | 2. Zoho Read | 2/2 | Complete | 2026-04-24 |
 | 3. Todoist Read | 0/3 | Not started | - |
 | 4. Write Operations | 0/2 | Not started | - |
-| 5. arq Worker | 0/TBD | Not started | - |
+| 5. arq Worker | 0/2 | Not started | - |
 | 6. Webhooks | 0/TBD | Not started | - |
 | 7. Reconciliation & Orphan Detection | 0/TBD | Not started | - |
 | 8. Observability & Migration | 0/TBD | Not started | - |
