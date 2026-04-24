@@ -86,7 +86,9 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   2. `POST /webhooks/todoist` verifies the HMAC-SHA256 signature in `X-Todoist-Hmac-SHA256` against the raw request body using `TODOIST_CLIENT_SECRET`; signature mismatch returns HTTP 401 immediately without processing
   3. Todoist `item:added`, `item:updated`, `item:completed`, `item:uncompleted`, and `item:deleted` events each reach the correct handler branch; `item:added` without a footer is discarded (logged); `item:deleted` enqueues the delete propagation path
   4. Both endpoints return HTTP 200 before any database or API I/O; the only synchronous operations are payload parsing and HMAC verification
-**Plans**: TBD
+**Plans**: 2 plans
+  - [ ] 06-01-PLAN.md — app/webhooks package + Zoho handler + lifespan ArqRedis pool & session_factory wiring + router mount (SYNC-4, INFRA-1, INFRA-4)
+  - [ ] 06-02-PLAN.md — Todoist handler: raw-body HMAC-SHA256 verification, event dispatch, footer check, sync_state lookup (SYNC-8, LOOP-5, EDGE-7, EDGE-8, INFRA-1)
 
 ### Phase 7: Reconciliation & Orphan Detection
 **Goal**: Missed webhooks, dropped jobs, and orphaned task pairs are detected and resolved automatically without human intervention
@@ -120,6 +122,6 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 | 3. Todoist Read | 0/3 | Not started | - |
 | 4. Write Operations | 0/2 | Not started | - |
 | 5. arq Worker | 0/2 | Not started | - |
-| 6. Webhooks | 0/TBD | Not started | - |
+| 6. Webhooks | 0/2 | Not started | - |
 | 7. Reconciliation & Orphan Detection | 0/TBD | Not started | - |
 | 8. Observability & Migration | 0/TBD | Not started | - |
