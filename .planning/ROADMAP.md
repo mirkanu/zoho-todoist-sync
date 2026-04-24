@@ -75,7 +75,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   5. When this service creates a new Todoist task, the resulting `item:added` webhook is identified as sync-managed (footer present) and suppressed without triggering a reverse sync
 **Plans**: 2 plans
   - [x] 05-01-PLAN.md — app/worker/jobs.py: sync_task pipeline with SETNX lock, SELECT FOR UPDATE, canonical-hash compare, LWW, Retry backoff (LOOP-1, LOOP-3, LOOP-5, SYNC-11)
-  - [ ] 05-02-PLAN.md — app/worker/{settings,__main__,enqueue}.py: WorkerSettings + lifecycle hooks + enqueue_sync helper with dedup + defer (INFRA-1, INFRA-3, SYNC-10, LOOP-4)
+  - [x] 05-02-PLAN.md — app/worker/{settings,__main__,enqueue}.py: WorkerSettings + lifecycle hooks + enqueue_sync helper with dedup + defer (INFRA-1, INFRA-3, SYNC-10, LOOP-4)
 
 ### Phase 6: Webhooks
 **Goal**: FastAPI webhook endpoints for both Zoho and Todoist are live, validate payloads, and enqueue jobs within milliseconds — no sync logic lives in the handlers
