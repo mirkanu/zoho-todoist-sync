@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.todoist.client import TodoistClient
+from app.todoist.sync_manager import startup_sync
 from app.zoho.client import ZohoClient
 from app.zoho.state import token_state, zoho_field_cache
 from app.zoho.token_manager import (
@@ -92,6 +94,17 @@ async def lifespan(app: FastAPI):
     )
     app.state.zoho_refresh_task = refresh_task
 
+    # 4. Initialise TodoistClient and run startup sync (loads/persists sync_token,
+    #    filters footerless items). A failure (TodoistAuthError) propagates and
+    #    halts boot — matches Zoho's fail-fast posture (SYNC-5).
+    todoist_client = TodoistClient(api_token=settings.todoist_api_token)
+    try:
+        await startup_sync(todoist_client, session_factory, settings)
+    except Exception:
+        await todoist_client.close()  # prevent httpx client leak on boot failure
+        raise
+    app.state.todoist_client = todoist_client
+
     yield
 
     # Shutdown: cancel the refresh task.
@@ -100,6 +113,8 @@ async def lifespan(app: FastAPI):
         await refresh_task
     except (asyncio.CancelledError, Exception):
         pass
+    # Close the Todoist HTTP client (frees httpx.AsyncClient).
+    await app.state.todoist_client.close()
     await engine.dispose()
     log.info("shutdown")
 

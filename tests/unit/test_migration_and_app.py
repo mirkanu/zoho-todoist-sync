@@ -140,10 +140,24 @@ def test_main_py_importable_with_env():
     for k, v in env_vars.items():
         os.environ[k] = v
 
+    # Snapshot existing app modules so we can restore them after this test.
+    # Without restoration, subsequent tests that monkeypatch module-level names
+    # (e.g. app.todoist.sync_manager.upsert_kv) receive a stale module object
+    # while the running code uses the freshly-imported one — causing ghost failures.
+    saved_app_modules = {k: v for k, v in sys.modules.items() if k.startswith("app")}
+
     # Remove cached modules to allow fresh import
     for mod in list(sys.modules.keys()):
         if mod.startswith("app"):
             del sys.modules[mod]
 
-    from app.main import app as fastapi_app
-    assert fastapi_app is not None
+    try:
+        from app.main import app as fastapi_app
+        assert fastapi_app is not None
+    finally:
+        # Restore previous app module objects so subsequent tests see a
+        # consistent module namespace (their monkeypatches target the right object).
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("app"):
+                del sys.modules[mod]
+        sys.modules.update(saved_app_modules)
