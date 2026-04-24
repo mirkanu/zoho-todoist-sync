@@ -47,7 +47,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 **Plans**: 3 plans
   - [x] 03-01-PLAN.md — app/todoist/normalise.py: extract_zoho_id() + todoist_task_to_normalised() adapter + unit tests (SYNC-5, SYNC-8, SYNC-9)
   - [x] 03-02-PLAN.md — app/todoist/client.py: TodoistClient wrapping TodoistAPIAsync + typed exceptions + fetch_sync_delta with client-side project filter (SYNC-5, SYNC-8)
-  - [ ] 03-03-PLAN.md — app/todoist/sync_manager.py: load/save sync_token + startup_sync + FastAPI lifespan wiring (SEED-7, SYNC-8)
+  - [x] 03-03-PLAN.md — app/todoist/sync_manager.py: load/save sync_token + startup_sync + FastAPI lifespan wiring (SEED-7, SYNC-8)
 
 ### Phase 4: Write Operations
 **Goal**: The service can create, update, complete, and delete tasks in both Todoist and Zoho with idempotent, normalised payloads
