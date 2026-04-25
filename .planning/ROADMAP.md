@@ -101,7 +101,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   4. Reconciler last-run timestamp is updated in `kv_store` after each sweep; the `/health` endpoint reflects `reconciler.last_run` and flags `degraded` if it is stale beyond 25 minutes
 **Plans**: 2 plans
   - [x] 07-01-PLAN.md — app/worker/reconciler.py reconcile_sweep cron + sync_token persistence + reconciler_last_run kv (SEED-5, SEED-7, SYNC-10, LOOP-3)
-  - [ ] 07-02-PLAN.md — app/worker/reconciler.py orphan_sweep + _handle_orphan + WorkerSettings.cron_jobs registration (SEED-6, EDGE-1, EDGE-2, EDGE-5, EDGE-6, EDGE-8)
+  - [x] 07-02-PLAN.md — app/worker/reconciler.py orphan_sweep + _handle_orphan + WorkerSettings.cron_jobs registration (SEED-6, EDGE-1, EDGE-2, EDGE-5, EDGE-6, EDGE-8)
 
 ### Phase 8: Observability & Migration
 **Goal**: The service is fully observable, the 90-day audit log is self-maintaining, and all existing Make.com task pairs are linked into the new sync system without data loss
