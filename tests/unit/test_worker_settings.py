@@ -316,3 +316,29 @@ def test_main_module_calls_run_worker(complete_env):
     assert "from arq import run_worker" in src
     assert "run_worker(WorkerSettings)" in src
     assert 'if __name__ == "__main__"' in src
+
+
+# ---------------------------------------------------------------------------
+# Test 13: cron_jobs registers reconcile_sweep + orphan_sweep
+# ---------------------------------------------------------------------------
+
+def test_cron_jobs_registered(complete_env):
+    """WorkerSettings.cron_jobs has 2 entries: reconcile_sweep + orphan_sweep with correct schedules."""
+    import importlib
+    import app.worker.settings as ws_mod
+    importlib.reload(ws_mod)
+    cron_jobs = ws_mod.WorkerSettings.cron_jobs
+    assert len(cron_jobs) == 2
+    names = {cj.coroutine.__name__ for cj in cron_jobs}
+    assert "reconcile_sweep" in names
+    assert "orphan_sweep" in names
+    by_name = {cj.coroutine.__name__: cj for cj in cron_jobs}
+    reconcile = by_name["reconcile_sweep"]
+    orphan = by_name["orphan_sweep"]
+    # arq CronJob stores minute/second as sets
+    assert reconcile.minute == {0, 15, 30, 45}
+    assert reconcile.second == {0}
+    assert orphan.minute == {0}
+    assert orphan.second == {0}
+    assert reconcile.timeout is not None
+    assert orphan.timeout is not None
