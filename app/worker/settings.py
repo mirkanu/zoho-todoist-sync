@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.todoist.client import TodoistClient
+from app.worker.daily_summary import daily_summary
 from app.worker.jobs import sync_task
 from app.worker.reconciler import orphan_sweep, reconcile_sweep
 from app.zoho.client import ZohoClient
@@ -118,6 +119,7 @@ class WorkerSettings:
     cron_jobs = [
         cron(reconcile_sweep, minute={0, 15, 30, 45}, second=0, timeout=300),
         cron(orphan_sweep,    minute={0},             second=0, timeout=600),
+        cron(daily_summary,   hour={0}, minute={0},   second=0, timeout=120),
     ]
     on_startup = on_startup
     on_shutdown = on_shutdown
