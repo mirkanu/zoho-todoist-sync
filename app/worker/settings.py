@@ -23,7 +23,7 @@ import asyncio
 from datetime import datetime, timezone
 
 import resend
-from arq import func
+from arq import cron, func
 from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -31,6 +31,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.todoist.client import TodoistClient
 from app.worker.jobs import sync_task
+from app.worker.reconciler import orphan_sweep, reconcile_sweep
 from app.zoho.client import ZohoClient
 from app.zoho.state import token_state
 from app.zoho.token_manager import (
@@ -113,6 +114,10 @@ async def on_shutdown(ctx: dict) -> None:
 class WorkerSettings:
     functions = [
         func(sync_task, timeout=60, keep_result=300, max_tries=4),
+    ]
+    cron_jobs = [
+        cron(reconcile_sweep, minute={0, 15, 30, 45}, second=0, timeout=300),
+        cron(orphan_sweep,    minute={0},             second=0, timeout=600),
     ]
     on_startup = on_startup
     on_shutdown = on_shutdown
