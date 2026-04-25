@@ -100,7 +100,7 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   3. Orphan sweep runs hourly: for each `sync_state` row, verifies the Zoho task exists and is assigned to me, and the Todoist task exists; a single 404 is logged as WARN and noted in `sync_state.orphan_check_count`; a second consecutive 404 triggers orphan handling (delete from the live system, remove `sync_state` row, log `action='orphan'`, send Resend email)
   4. Reconciler last-run timestamp is updated in `kv_store` after each sweep; the `/health` endpoint reflects `reconciler.last_run` and flags `degraded` if it is stale beyond 25 minutes
 **Plans**: 2 plans
-  - [ ] 07-01-PLAN.md — app/worker/reconciler.py reconcile_sweep cron + sync_token persistence + reconciler_last_run kv (SEED-5, SEED-7, SYNC-10, LOOP-3)
+  - [x] 07-01-PLAN.md — app/worker/reconciler.py reconcile_sweep cron + sync_token persistence + reconciler_last_run kv (SEED-5, SEED-7, SYNC-10, LOOP-3)
   - [ ] 07-02-PLAN.md — app/worker/reconciler.py orphan_sweep + _handle_orphan + WorkerSettings.cron_jobs registration (SEED-6, EDGE-1, EDGE-2, EDGE-5, EDGE-6, EDGE-8)
 
 ### Phase 8: Observability & Migration
