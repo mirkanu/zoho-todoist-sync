@@ -335,10 +335,12 @@ def test_cron_jobs_registered(complete_env):
     by_name = {cj.coroutine.__name__: cj for cj in cron_jobs}
     reconcile = by_name["reconcile_sweep"]
     orphan = by_name["orphan_sweep"]
-    # arq CronJob stores minute/second as sets
+    # arq CronJob: minute is stored as a set, second as an int
     assert reconcile.minute == {0, 15, 30, 45}
-    assert reconcile.second == {0}
-    assert orphan.minute == {0}
-    assert orphan.second == {0}
-    assert reconcile.timeout is not None
-    assert orphan.timeout is not None
+    # second may be int 0 or set {0} depending on arq version — accept either
+    assert reconcile.second in (0, {0})
+    assert orphan.minute in ({0}, 0)
+    assert orphan.second in (0, {0})
+    # timeout is stored as timeout_s (in seconds)
+    assert reconcile.timeout_s is not None
+    assert orphan.timeout_s is not None

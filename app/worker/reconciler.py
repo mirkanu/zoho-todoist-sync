@@ -1,4 +1,4 @@
-"""Periodic reconciliation cron jobs. SEED-5, SEED-7."""
+"""Periodic reconciliation cron jobs. SEED-5, SEED-6, SEED-7."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -9,17 +9,23 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.hash import canonical_hash
 from app.core.logging import get_logger
-from app.db.models import SyncState
+from app.core.notifications import send_deletion_notification
+from app.db.models import SyncEvent, SyncState
+from app.todoist.client import TodoistAPIError, TodoistNotFoundError, TodoistRateLimitError
 from app.todoist.normalise import extract_zoho_id
 from app.todoist.sync_manager import load_sync_token, save_sync_token
+from app.todoist.writer import delete_todoist_task
 from app.worker.enqueue import enqueue_sync
-from app.zoho.client import ZohoAPIError
+from app.zoho.client import ZohoAPIError, ZohoNotFoundError, ZohoRateLimitError
 from app.zoho.normalise import zoho_record_to_normalised
+from app.zoho.state import token_state
 from app.zoho.token_manager import upsert_kv
+from app.zoho.writer import delete_zoho_task
 
 log = get_logger(__name__)
 
 KV_RECONCILER_LAST_RUN = "reconciler_last_run"
+KV_ORPHAN_SWEEP_LAST_RUN = "orphan_sweep_last_run"
 RECONCILE_LOOKBACK_MINUTES = 20
 
 
@@ -96,3 +102,180 @@ async def reconcile_sweep(ctx: dict) -> None:
         zoho_count=len(zoho_records),
         todoist_count=len(items),
     )
+
+
+async def orphan_sweep(ctx: dict) -> None:
+    """Hourly sweep: check all sync_state rows for orphaned task pairs.
+
+    Two-cycle confirmation (EDGE-5): first detection increments orphan_check_count;
+    second consecutive detection triggers deletion + notification + cleanup.
+    Rate-limit errors skip the row (not counted as 404). SEED-6.
+    """
+    session_factory = ctx["session_factory"]
+    zoho_client = ctx["zoho_client"]
+    todoist_client = ctx["todoist_client"]
+    settings = get_settings()
+
+    log.info("orphan_sweep_start")
+
+    # Load all sync_state rows for the scan
+    async with session_factory() as session:
+        result = await session.execute(select(SyncState))
+        rows = result.scalars().all()
+
+    for state in rows:
+        zoho_missing = False
+        todoist_missing = False
+        todoist_task = None
+
+        # ------------------------------------------------------------------
+        # Zoho check: existence + ownership (EDGE-1 reassignment detection)
+        # ------------------------------------------------------------------
+        try:
+            response = await zoho_client.get_task(state.zoho_task_id)
+            data = (response.get("data") or [{}])[0]
+            owner_raw = (data.get("Owner") or {}).get("id", "")
+            # V5 input validation: ensure str before comparison (T-7-07)
+            if not isinstance(owner_raw, str):
+                owner_raw = str(owner_raw) if owner_raw is not None else ""
+            if owner_raw != settings.zoho_user_id:
+                zoho_missing = True  # EDGE-1: reassignment treated as missing
+                log.warning(
+                    "orphan_sweep_zoho_reassigned",
+                    zoho_task_id=state.zoho_task_id,
+                    new_owner=owner_raw,
+                )
+        except ZohoNotFoundError:
+            zoho_missing = True
+        except (ZohoRateLimitError, ZohoAPIError) as exc:
+            log.warning(
+                "orphan_sweep_zoho_api_error",
+                zoho_task_id=state.zoho_task_id,
+                error=str(exc),
+            )
+            continue  # SKIP — do not count as 404; retry next sweep
+
+        # ------------------------------------------------------------------
+        # Todoist check: existence
+        # ------------------------------------------------------------------
+        try:
+            todoist_task = await todoist_client.fetch_todoist_task(state.todoist_task_id)
+        except TodoistNotFoundError:
+            todoist_missing = True
+        except (TodoistRateLimitError, TodoistAPIError) as exc:
+            log.warning(
+                "orphan_sweep_todoist_api_error",
+                todoist_task_id=state.todoist_task_id,
+                error=str(exc),
+            )
+            continue  # SKIP — do not count as 404; retry next sweep
+
+        # ------------------------------------------------------------------
+        # Healthy path: both sides present
+        # ------------------------------------------------------------------
+        if not zoho_missing and not todoist_missing:
+            # EDGE-8: re-attach [zoho:ID] footer if missing
+            description = getattr(todoist_task, "description", "") or ""
+            if extract_zoho_id(description) is None:
+                log.warning(
+                    "orphan_sweep_missing_footer",
+                    todoist_task_id=state.todoist_task_id,
+                )
+                new_description = description + f"\n\n---\n[zoho:{state.zoho_task_id}]"
+                await todoist_client._api.update_task(
+                    state.todoist_task_id, description=new_description
+                )
+            # Recovery: reset orphan_check_count if it was elevated
+            if state.orphan_check_count > 0:
+                async with session_factory() as sess:
+                    async with sess.begin():
+                        locked = await sess.get(SyncState, state.zoho_task_id)
+                        if locked is not None:
+                            locked.orphan_check_count = 0
+            continue
+
+        # ------------------------------------------------------------------
+        # Two-cycle confirmation (EDGE-5): first detection — increment counter
+        # ------------------------------------------------------------------
+        if state.orphan_check_count < 1:
+            log.warning(
+                "orphan_first_cycle",
+                zoho_task_id=state.zoho_task_id,
+                zoho_missing=zoho_missing,
+                todoist_missing=todoist_missing,
+            )
+            async with session_factory() as sess:
+                async with sess.begin():
+                    locked = await sess.get(SyncState, state.zoho_task_id)
+                    if locked is not None:
+                        locked.orphan_check_count += 1
+            continue
+
+        # Second consecutive detection → orphan confirmed; handle it
+        await _handle_orphan(state, zoho_missing, todoist_missing, ctx)
+
+    # ------------------------------------------------------------------
+    # Persist last-run timestamp
+    # ------------------------------------------------------------------
+    async with session_factory() as session:
+        await upsert_kv(session, KV_ORPHAN_SWEEP_LAST_RUN, datetime.now(timezone.utc).isoformat())
+        await session.commit()
+
+    log.info("orphan_sweep_complete", row_count=len(rows))
+
+
+async def _handle_orphan(
+    state: Any,
+    zoho_missing: bool,
+    todoist_missing: bool,
+    ctx: dict,
+) -> None:
+    """Delete the live counterpart of a confirmed orphan pair, send notification,
+    delete the sync_state row, and log a SyncEvent. EDGE-1, EDGE-2, EDGE-6.
+
+    Note: delete_todoist_task and delete_zoho_task already send Resend notifications
+    internally (EDGE-6). No double-notification here.
+    """
+    session_factory = ctx["session_factory"]
+
+    if zoho_missing:
+        # Zoho task gone or reassigned (EDGE-1) → delete Todoist counterpart
+        try:
+            await delete_todoist_task(state.todoist_task_id, ctx["todoist_client"]._api)
+        except Exception as exc:
+            log.error(
+                "orphan_todoist_delete_failed",
+                todoist_task_id=state.todoist_task_id,
+                error=str(exc),
+            )
+
+    if todoist_missing:
+        # Todoist task gone (EDGE-2) → delete Zoho counterpart
+        try:
+            access_token = token_state["access_token"]
+            await delete_zoho_task(state.zoho_task_id, access_token)
+        except Exception as exc:
+            log.error(
+                "orphan_zoho_delete_failed",
+                zoho_task_id=state.zoho_task_id,
+                error=str(exc),
+            )
+
+    # Delete sync_state row + log SyncEvent in a single transaction
+    async with session_factory() as session:
+        async with session.begin():
+            row = await session.get(SyncState, state.zoho_task_id)
+            if row is not None:
+                await session.delete(row)
+            session.add(SyncEvent(
+                zoho_task_id=state.zoho_task_id,
+                action="orphan",
+                source="reconciler",
+                detail={
+                    "todoist_task_id": state.todoist_task_id,
+                    "zoho_missing": zoho_missing,
+                    "todoist_missing": todoist_missing,
+                },
+            ))
+
+    log.info("orphan_resolved", zoho_task_id=state.zoho_task_id)
