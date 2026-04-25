@@ -113,7 +113,11 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
   3. An E2E test with a dummy task pair completes successfully: create test task in Zoho → verify it appears in Todoist within 60s → edit title/due date/priority → verify propagation → complete task → verify completion propagated → verify no infinite loop in `sync_events`
   4. The migration script runs without error against live data: all existing `sync_state`-less task pairs (identified via `Todoist_Task_ID` custom field) are linked with correct `last_hash` values and Todoist descriptions updated to the `[zoho:ID]` footer format; no duplicate Todoist tasks are created; the Make.com preamble is replaced (not appended to)
   5. After migration, the live system processes at least 10 real sync events (from normal Zoho task usage) with zero infinite loops observed in `sync_events`
-**Plans**: TBD
+**Plans**: 4 plans
+  - [ ] 08-01-PLAN.md — Health endpoint (`app/health/router.py`) with OBS-1 response shape, D-10 status logic, HTTP 200/503 mapping; mounted in `app/main.py`
+  - [ ] 08-02-PLAN.md — Daily summary arq cron (`app/worker/daily_summary.py`) at midnight UTC: 90-day cleanup → counts → create + complete Todoist summary task; registered in `WorkerSettings.cron_jobs`
+  - [ ] 08-03-PLAN.md — Migration script (`scripts/migrate.py`) with `--dry-run`: links existing Make.com pairs into sync_state, replaces description with footer (SEED-3), 404 fallback per D-03
+  - [ ] 08-04-PLAN.md — E2E test script (`scripts/e2e_test.py`) with manual checkpoint gate: create→edit→complete→cleanup live round-trip per SEED-4
 
 ## Progress
 
@@ -126,4 +130,4 @@ Build a loop-safe, two-way sync service between Zoho CRM Tasks and Todoist, depl
 | 5. arq Worker | 0/2 | Not started | - |
 | 6. Webhooks | 0/2 | Not started | - |
 | 7. Reconciliation & Orphan Detection | 0/2 | Not started | - |
-| 8. Observability & Migration | 0/TBD | Not started | - |
+| 8. Observability & Migration | 0/4 | Not started | - |
