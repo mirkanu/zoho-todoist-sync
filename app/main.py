@@ -15,6 +15,7 @@ from app.todoist.client import TodoistClient
 from app.todoist.sync_manager import startup_sync
 from app.zoho.client import ZohoClient
 from app.zoho.state import token_state, zoho_field_cache
+from app.health.router import router as health_router
 from app.webhooks.router import router as webhooks_router
 from app.zoho.token_manager import (
     KV_ACCESS_TOKEN_KEY,
@@ -137,4 +138,5 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(health_router, tags=["health"])
 app.include_router(webhooks_router, prefix="/webhooks", tags=["webhooks"])
