@@ -323,24 +323,31 @@ def test_main_module_calls_run_worker(complete_env):
 # ---------------------------------------------------------------------------
 
 def test_cron_jobs_registered(complete_env):
-    """WorkerSettings.cron_jobs has 2 entries: reconcile_sweep + orphan_sweep with correct schedules."""
+    """WorkerSettings.cron_jobs has 3 entries: reconcile_sweep, orphan_sweep, daily_summary."""
     import importlib
     import app.worker.settings as ws_mod
     importlib.reload(ws_mod)
     cron_jobs = ws_mod.WorkerSettings.cron_jobs
-    assert len(cron_jobs) == 2
+    assert len(cron_jobs) == 3
     names = {cj.coroutine.__name__ for cj in cron_jobs}
     assert "reconcile_sweep" in names
     assert "orphan_sweep" in names
+    assert "daily_summary" in names
     by_name = {cj.coroutine.__name__: cj for cj in cron_jobs}
     reconcile = by_name["reconcile_sweep"]
     orphan = by_name["orphan_sweep"]
+    daily = by_name["daily_summary"]
     # arq CronJob: minute is stored as a set, second as an int
     assert reconcile.minute == {0, 15, 30, 45}
     # second may be int 0 or set {0} depending on arq version — accept either
     assert reconcile.second in (0, {0})
     assert orphan.minute in ({0}, 0)
     assert orphan.second in (0, {0})
+    # daily_summary: midnight UTC (hour=0, minute=0)
+    assert daily.hour in ({0}, 0)
+    assert daily.minute in ({0}, 0)
+    assert daily.second in (0, {0})
     # timeout is stored as timeout_s (in seconds)
     assert reconcile.timeout_s is not None
     assert orphan.timeout_s is not None
+    assert daily.timeout_s is not None
