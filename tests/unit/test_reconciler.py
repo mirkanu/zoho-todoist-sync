@@ -181,8 +181,8 @@ async def test_reconcile_todoist_delta(complete_env, monkeypatch):
 
     ctx["zoho_client"].fetch_tasks_modified_since = AsyncMock(return_value=[])
     items = [
-        {"id": "T1", "description": "some task\n\n---\n[zoho:Z100]", "is_deleted": False},
-        {"id": "T2", "description": "[zoho:Z200]", "is_deleted": False},
+        {"id": "T1", "description": "some task\n\n---\n[zoho:100]", "is_deleted": False},
+        {"id": "T2", "description": "[zoho:200]", "is_deleted": False},
     ]
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
@@ -197,9 +197,9 @@ async def test_reconcile_todoist_delta(complete_env, monkeypatch):
     assert mock_enqueue.call_count == 2
     calls = [c.args for c in mock_enqueue.call_args_list]
     assert calls[0][0] is ctx["redis"]
-    assert calls[0][1] == "Z100"
+    assert calls[0][1] == "100"
     assert calls[1][0] is ctx["redis"]
-    assert calls[1][1] == "Z200"
+    assert calls[1][1] == "200"
     assert mock_enqueue.call_args_list[0].kwargs.get("defer_secs", 0) == 0
     assert mock_enqueue.call_args_list[1].kwargs.get("defer_secs", 0) == 0
 
@@ -251,7 +251,7 @@ async def test_reconcile_todoist_delta_is_deleted_skipped(complete_env, monkeypa
 
     ctx["zoho_client"].fetch_tasks_modified_since = AsyncMock(return_value=[])
     items = [
-        {"id": "T1", "description": "[zoho:Z999]", "is_deleted": True},
+        {"id": "T1", "description": "[zoho:999]", "is_deleted": True},
     ]
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
