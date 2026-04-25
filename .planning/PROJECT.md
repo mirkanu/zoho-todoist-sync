@@ -28,6 +28,16 @@ Validated in Phase 3 (Todoist Read):
 - `sync_token` persisted to `kv_store` before item processing loop for crash-safety; `"*"` sentinel triggers full sync on first run (SEED-7)
 - `startup_sync` wired into FastAPI lifespan before `yield`; `TodoistClient` lifecycle managed (open/close) around lifespan
 
+Validated in Phase 7 (Reconciliation & Orphan Detection):
+- `reconcile_sweep` fetches Zoho modified-since (20 min lookback) + Todoist incremental delta every 15 min; enqueues sync_task on hash mismatch (SEED-5)
+- `orphan_sweep` scans all sync_state rows hourly with two-cycle confirmation before deletion (EDGE-5)
+- Reassignment (Owner.id mismatch) treated identically to 404 — Todoist counterpart deleted on second cycle (EDGE-1)
+- Todoist task missing → Zoho counterpart deleted via `delete_zoho_task` on second cycle (EDGE-2)
+- Missing `[zoho:ID]` footer on healthy task re-attached via `update_task` without replacing user content (EDGE-8)
+- Resend notification delegated to writer functions; orphan handler does not double-send (EDGE-6)
+- `sync_token` persisted after each delta poll; `reconciler_last_run` + `orphan_sweep_last_run` KV keys written for Phase 8 `/health` (SEED-7, SYNC-10)
+- `WorkerSettings.cron_jobs`: reconcile_sweep at minute={0,15,30,45} timeout=300; orphan_sweep at minute=0 timeout=600
+
 Validated in Phase 4 (Write Operations):
 - Todoist write path: create/update/complete/delete with correct payload shapes — `due_date` always a `date` object, never `due_datetime`; `due_string="no date"` to clear; `description`/`labels` never passed on update (SYNC-1, SYNC-2, SYNC-8)
 - `[zoho:ID]` footer appended to description on Todoist task creation (SYNC-5)
@@ -122,4 +132,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-24 after Phase 6 (Webhooks) complete*
+*Last updated: 2026-04-25
