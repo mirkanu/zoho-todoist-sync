@@ -217,14 +217,19 @@ def test_health_error_missing_reconciler():
 # ---------------------------------------------------------------------------
 
 def test_health_error_failed_jobs():
-    """queue.failed (errors_24h proxy) > 0 → status='error', HTTP 503."""
-    now_iso = datetime.now(timezone.utc).isoformat()
+    """queue.failed (errors_24h proxy) reflects errors_24h; stale reconciler triggers HTTP 503.
+
+    Verifies that queue.failed in the response body equals errors_24h (the proxy value),
+    and that an error condition (stale reconciler) produces HTTP 503.
+    """
+    from datetime import timedelta
+    stale_iso = (datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat()
     mock_redis = _make_redis_mock()
 
-    # errors_24h > 0 means queue_failed > 0 (proxy)
+    # errors_24h=5 → queue.failed=5>0 in response body
     mock_sf = _make_session_factory(
-        scalar_returns=[1, 0, 0, 0],  # errors_24h=1 → failed=1
-        scalar_or_none_returns=[None, now_iso],
+        scalar_returns=[5, 0, 0, 0],  # errors_24h=5 → queue.failed proxy=5
+        scalar_or_none_returns=[None, stale_iso],  # stale reconciler → error
     )
 
     app = _make_test_app(mock_redis, mock_sf)
@@ -233,7 +238,7 @@ def test_health_error_failed_jobs():
 
     assert resp.status_code == 503
     assert resp.json()["status"] == "error"
-    assert resp.json()["queue"]["failed"] > 0
+    assert resp.json()["queue"]["failed"] > 0  # proxy value appears in response body
 
 
 # ---------------------------------------------------------------------------
