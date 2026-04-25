@@ -81,7 +81,7 @@ def _make_counters():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_already_linked_skipped(monkeypatch):
+async def test_already_linked_skipped(complete_env, monkeypatch):
     """When SyncState row exists, migrate_one_task skips all writes."""
     from scripts.migrate import migrate_one_task
     from app.todoist.client import TodoistNotFoundError
@@ -122,7 +122,7 @@ async def test_already_linked_skipped(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_link_existing_pair(monkeypatch):
+async def test_link_existing_pair(complete_env, monkeypatch):
     """Zoho has Todoist_Task_ID; fetch succeeds; migration calls update_task with footer."""
     from scripts.migrate import migrate_one_task
 
@@ -159,7 +159,7 @@ async def test_link_existing_pair(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_description_replaced_not_appended(monkeypatch):
+async def test_description_replaced_not_appended(complete_env, monkeypatch):
     """The description arg passed to update_task is EXACTLY the footer — no preamble."""
     from scripts.migrate import migrate_one_task
 
@@ -195,7 +195,7 @@ async def test_description_replaced_not_appended(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_todoist_404_fallback(monkeypatch):
+async def test_todoist_404_fallback(complete_env, monkeypatch):
     """fetch_todoist_task raises TodoistNotFoundError → create new task, write back, upsert."""
     from scripts.migrate import migrate_one_task
     from app.todoist.client import TodoistNotFoundError
@@ -235,7 +235,7 @@ async def test_todoist_404_fallback(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_create_for_empty_id(monkeypatch):
+async def test_create_for_empty_id(complete_env, monkeypatch):
     """Zoho task has no Todoist_Task_ID → create fresh, write back, store sync_state."""
     from scripts.migrate import migrate_one_task
 
@@ -272,7 +272,7 @@ async def test_create_for_empty_id(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_dry_run_no_writes(monkeypatch):
+async def test_dry_run_no_writes(complete_env, monkeypatch):
     """With dry_run=True, no writes occur; counters still increment."""
     from scripts.migrate import migrate_one_task
 
@@ -327,7 +327,7 @@ async def test_dry_run_no_writes(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_dry_run_prints_counts(monkeypatch, capsys):
+async def test_dry_run_prints_counts(complete_env, monkeypatch, capsys):
     """run_migration with dry_run=True prints all counter labels to stdout."""
     from scripts.migrate import run_migration
 
@@ -363,7 +363,7 @@ async def test_dry_run_prints_counts(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_canonical_hash_seeded(monkeypatch):
+async def test_canonical_hash_seeded(complete_env, monkeypatch):
     """When sync_state is upserted, last_hash equals canonical_hash(normalised record)."""
     from scripts.migrate import migrate_one_task
     from app.db.models import SyncState
@@ -404,7 +404,7 @@ async def test_canonical_hash_seeded(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_idempotency_two_runs(monkeypatch):
+async def test_idempotency_two_runs(complete_env, monkeypatch):
     """Invoking migrate_one_task twice for same record results in zero writes on second call."""
     from scripts.migrate import migrate_one_task
     from app.db.models import SyncState
