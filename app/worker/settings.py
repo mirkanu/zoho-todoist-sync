@@ -32,7 +32,7 @@ from app.core.logging import configure_logging, get_logger
 from app.todoist.client import TodoistClient
 from app.worker.daily_summary import daily_summary
 from app.worker.jobs import sync_task
-from app.worker.reconciler import orphan_sweep, reconcile_sweep
+from app.worker.reconciler import orphan_sweep, reconcile_sweep, renew_zoho_webhook
 from app.zoho.client import ZohoClient
 from app.zoho.state import token_state
 from app.zoho.token_manager import (
@@ -117,9 +117,10 @@ class WorkerSettings:
         func(sync_task, timeout=60, keep_result=300, max_tries=4),
     ]
     cron_jobs = [
-        cron(reconcile_sweep, minute={0, 15, 30, 45}, second=0, timeout=300),
-        cron(orphan_sweep,    minute={0},             second=0, timeout=600),
-        cron(daily_summary,   hour={0}, minute={0},   second=0, timeout=120),
+        cron(reconcile_sweep,     minute={0, 15, 30, 45}, second=0, timeout=300),
+        cron(orphan_sweep,        minute={0},             second=0, timeout=600),
+        cron(daily_summary,       hour={0}, minute={0},   second=0, timeout=120),
+        cron(renew_zoho_webhook,  minute={0, 45},         second=0, timeout=30),
     ]
     on_startup = on_startup
     on_shutdown = on_shutdown
