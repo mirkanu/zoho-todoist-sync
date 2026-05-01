@@ -1,6 +1,6 @@
 """Unit tests for scripts.migrate — migration algorithm.
 
-Covers: SEED-1 (idempotency), SEED-2 (create-for-empty-id), SEED-3 (description replaced),
+Covers: SEED-1 (idempotency), SEED-2 (create-for-empty-id), SEED-3 (link existing pair),
 D-02 (dry-run), D-03 (404 fallback).
 """
 import pytest
@@ -123,7 +123,7 @@ async def test_already_linked_skipped(complete_env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_link_existing_pair(complete_env, monkeypatch):
-    """Zoho has Todoist_Task_ID; fetch succeeds; migration calls update_task with footer."""
+    """Zoho has Todoist_Task_ID; fetch succeeds; upserts sync_state, no Todoist writes."""
     from scripts.migrate import migrate_one_task
 
     session_factory, sess = _make_session_factory_existing_state(None)  # no existing state
@@ -146,21 +146,19 @@ async def test_link_existing_pair(complete_env, monkeypatch):
 
     assert counters["linked"] == 1
     todoist_client.fetch_todoist_task.assert_called_once_with("TD-456")
-    todoist_client._api.update_task.assert_called_once()
-    kwargs = todoist_client._api.update_task.call_args.kwargs
-    assert kwargs["description"] == "\n\n---\n[zoho:ZOHO-123]"
+    todoist_client._api.update_task.assert_not_called()
     # write_todoist_id_to_zoho should NOT be called for existing pair
     mock_write_back.assert_not_called()
     sess.add.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Description replaced not appended (SEED-3 exact-match guard)
+# Test 3: Link existing pair — sync_state hash is correct (SEED-3)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_description_replaced_not_appended(complete_env, monkeypatch):
-    """The description arg passed to update_task is EXACTLY the footer — no preamble."""
+async def test_link_existing_pair_hash(complete_env, monkeypatch):
+    """Linked pair stores the correct canonical_hash in sync_state."""
     from scripts.migrate import migrate_one_task
 
     session_factory, sess = _make_session_factory_existing_state(None)
@@ -180,14 +178,12 @@ async def test_description_replaced_not_appended(complete_env, monkeypatch):
         dry_run=False,
     )
 
-    todoist_client._api.update_task.assert_called_once()
-    call_args = todoist_client._api.update_task.call_args
-    # description must be EXACTLY this string — not a substring check
-    assert call_args.kwargs["description"] == "\n\n---\n[zoho:ZOHO-123]"
-    # Guard: should not contain any Make.com preamble text
-    desc = call_args.kwargs["description"]
-    assert desc.startswith("\n\n---\n[zoho:"), f"Unexpected prefix in description: {desc!r}"
-    assert desc == "\n\n---\n[zoho:ZOHO-123]", f"Description not exact: {desc!r}"
+    sess.add.assert_called_once()
+    state_row = sess.add.call_args.args[0]
+    expected_hash = canonical_hash(zoho_record_to_normalised(SAMPLE_RECORD_WITH_ID, TERMINAL_STATUSES))
+    assert state_row.last_hash == expected_hash
+    assert state_row.zoho_task_id == "ZOHO-123"
+    assert state_row.todoist_task_id == "TD-456"
 
 
 # ---------------------------------------------------------------------------

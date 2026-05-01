@@ -2,9 +2,6 @@
 
 SEED-7: sync_token persists across restarts so Sync API calls resume
 incrementally; falls back to '*' (full sync) when missing or corrupted.
-
-SYNC-8: items without [zoho:ID] footer are discarded at the read boundary;
-deleted items are logged and skipped in Phase 3 (read-only).
 """
 from __future__ import annotations
 
@@ -14,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.db.models import KVStore
-from app.todoist.normalise import extract_zoho_id
 from app.zoho.token_manager import upsert_kv  # reused — do NOT duplicate
 
 if TYPE_CHECKING:
@@ -74,7 +70,6 @@ async def startup_sync(
         await save_sync_token(session, new_token)
 
     total = len(items)
-    discarded_no_footer = 0
     deleted = 0
     processed = 0
 
@@ -83,22 +78,12 @@ async def startup_sync(
             deleted += 1
             log.info("todoist_item_deleted_skipped", todoist_id=item.get("id"))
             continue
-        zoho_id = extract_zoho_id(item.get("description"))
-        if zoho_id is None:
-            discarded_no_footer += 1
-            log.info(
-                "todoist_item_no_footer_discarded",
-                todoist_id=item.get("id"),
-            )
-            continue
         processed += 1
-        # Phase 3 is read-only. Phase 5 will hand off `zoho_id` to the sync pipeline.
 
     log.info(
         "todoist_startup_sync_complete",
         total=total,
         processed=processed,
-        discarded_no_footer=discarded_no_footer,
         deleted=deleted,
         full_sync=(stored_token == FULL_SYNC_SENTINEL),
     )

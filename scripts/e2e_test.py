@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
-from app.db.models import SyncEvent
+from app.db.models import SyncEvent, SyncState
 from app.todoist.client import TodoistClient
 from app.worker.enqueue import enqueue_sync
 from app.zoho.client import ZohoClient, ZOHO_EU_BASE_URL
@@ -57,15 +57,19 @@ async def create_zoho_test_task(subject: str, owner_id: str, access_token: str) 
     return str(resp.json()["data"][0]["details"]["id"])
 
 
-async def find_todoist_task_for_zoho(todoist_client: TodoistClient, project_id: str, zoho_task_id: str):
-    """Return the Todoist task whose description contains [zoho:{zoho_task_id}], or None."""
-    marker = f"[zoho:{zoho_task_id}]"
-    tasks = await todoist_client._api.get_tasks(project_id=project_id)
-    async for page in tasks:
-        for t in page:
-            if marker in (t.description or ""):
-                return t
-    return None
+async def get_todoist_task_for_zoho(todoist_client: TodoistClient, session_factory, zoho_task_id: str):
+    """Return the Todoist task linked to zoho_task_id via sync_state, or None."""
+    async with session_factory() as session:
+        result = await session.execute(
+            select(SyncState.todoist_task_id).where(SyncState.zoho_task_id == zoho_task_id)
+        )
+        todoist_task_id = result.scalar_one_or_none()
+    if todoist_task_id is None:
+        return None
+    try:
+        return await todoist_client.fetch_todoist_task(todoist_task_id)
+    except Exception:
+        return None
 
 
 async def poll_until(predicate_coro_factory, *, timeout_s: int = POLL_TIMEOUT_S, interval_s: int = POLL_INTERVAL_S, error_msg: str):
@@ -80,27 +84,29 @@ async def poll_until(predicate_coro_factory, *, timeout_s: int = POLL_TIMEOUT_S,
     raise AssertionError(f"{error_msg} (after {timeout_s}s, last_value={last_value!r})")
 
 
-async def _check_todoist_field(todoist_client, project_id, zoho_id, field, expected):
-    t = await find_todoist_task_for_zoho(todoist_client, project_id, zoho_id)
+async def _check_todoist_field(todoist_client, session_factory, zoho_id, field, expected):
+    t = await get_todoist_task_for_zoho(todoist_client, session_factory, zoho_id)
     if t is None:
         return None
     actual = getattr(t, field, None)
     return t if actual == expected else None
 
 
-async def _check_todoist_due(todoist_client, project_id, zoho_id, expected_date):
-    t = await find_todoist_task_for_zoho(todoist_client, project_id, zoho_id)
+async def _check_todoist_due(todoist_client, session_factory, zoho_id, expected_date):
+    t = await get_todoist_task_for_zoho(todoist_client, session_factory, zoho_id)
     if t is None or t.due is None:
         return None
-    # t.due may be an object with .date attribute or a dict
     date_val = getattr(t.due, "date", None) or (t.due.get("date") if isinstance(t.due, dict) else None)
+    if hasattr(date_val, "strftime"):
+        date_val = date_val.strftime("%Y-%m-%d")
     return t if date_val == expected_date else None
 
 
-async def _check_todoist_completed(todoist_client, project_id, zoho_id, todoist_id):
-    # Active list no longer contains it — consider that proof of completion.
-    t = await find_todoist_task_for_zoho(todoist_client, project_id, zoho_id)
-    return True if t is None else None
+async def _check_todoist_completed(todoist_client, session_factory, zoho_id, todoist_id):
+    t = await get_todoist_task_for_zoho(todoist_client, session_factory, zoho_id)
+    if t is None:
+        return True
+    return True if getattr(t, "is_completed", False) else None
 
 
 async def run_e2e(
@@ -130,8 +136,8 @@ async def run_e2e(
         # 3. Wait for Todoist counterpart (D-06)
         print(f"[E2E] Waiting up to {POLL_TIMEOUT_S}s for Todoist propagation ...")
         t = await poll_until(
-            lambda: find_todoist_task_for_zoho(todoist_client, project_id, zoho_id),
-            error_msg=f"Todoist task with [zoho:{zoho_id}] never appeared",
+            lambda: get_todoist_task_for_zoho(todoist_client, session_factory, zoho_id),
+            error_msg=f"Todoist task for zoho:{zoho_id} never appeared in sync_state",
         )
         todoist_id = t.id
         assert subject in t.content, f"Title mismatch: expected {subject!r} in {t.content!r}"
@@ -146,7 +152,7 @@ async def run_e2e(
                 json={"data": [{"Subject": new_subject}]})
         await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
-            lambda: _check_todoist_field(todoist_client, project_id, zoho_id, "content", new_subject),
+            lambda: _check_todoist_field(todoist_client, session_factory, zoho_id, "content", new_subject),
             error_msg="Todoist content did not update after Zoho subject edit",
         )
         print("[E2E] Subject propagation verified")
@@ -160,7 +166,7 @@ async def run_e2e(
                 json={"data": [{"Due_Date": new_due}]})
         await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
-            lambda: _check_todoist_due(todoist_client, project_id, zoho_id, new_due),
+            lambda: _check_todoist_due(todoist_client, session_factory, zoho_id, new_due),
             error_msg="Todoist due.date did not match after Zoho Due_Date edit",
         )
         print("[E2E] Due date propagation verified")
@@ -173,7 +179,7 @@ async def run_e2e(
                 json={"data": [{"Priority": "Highest"}]})
         await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
-            lambda: _check_todoist_field(todoist_client, project_id, zoho_id, "priority", 4),
+            lambda: _check_todoist_field(todoist_client, session_factory, zoho_id, "priority", 4),
             error_msg="Todoist priority did not update to 4 after Zoho Priority=Highest",
         )
         print("[E2E] Priority propagation verified")
@@ -183,7 +189,7 @@ async def run_e2e(
         await complete_zoho_task(zoho_id, access_token)
         await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
-            lambda: _check_todoist_completed(todoist_client, project_id, zoho_id, todoist_id),
+            lambda: _check_todoist_completed(todoist_client, session_factory, zoho_id, todoist_id),
             error_msg="Todoist task was not closed after Zoho completion",
         )
         print("[E2E] Completion propagation verified")

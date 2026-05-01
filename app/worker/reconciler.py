@@ -12,7 +12,6 @@ from app.core.logging import get_logger
 from app.core.notifications import send_deletion_notification
 from app.db.models import SyncEvent, SyncState
 from app.todoist.client import TodoistAPIError, TodoistNotFoundError, TodoistRateLimitError
-from app.todoist.normalise import extract_zoho_id
 from app.todoist.sync_manager import load_sync_token, save_sync_token
 from app.todoist.writer import delete_todoist_task
 from app.worker.enqueue import enqueue_sync
@@ -83,6 +82,9 @@ async def reconcile_sweep(ctx: dict) -> None:
 
     log.info("reconcile_sweep_start", since=since.isoformat())
 
+    # Sync client token from global state (proactive_refresh_loop updates token_state only).
+    zoho_client.access_token = token_state["access_token"]
+
     # ------------------------------------------------------------------
     # Zoho side: fetch modified tasks, enqueue on hash mismatch
     # ------------------------------------------------------------------
@@ -122,9 +124,16 @@ async def reconcile_sweep(ctx: dict) -> None:
         if item.get("is_deleted"):
             log.info("reconcile_todoist_deleted_skipped", todoist_id=item.get("id"))
             continue
-        zoho_id = extract_zoho_id(item.get("description"))
+        todoist_id = str(item.get("id", ""))
+        async with session_factory() as session:
+            result = await session.execute(
+                select(SyncState.zoho_task_id).where(
+                    SyncState.todoist_task_id == todoist_id
+                )
+            )
+            zoho_id = result.scalar_one_or_none()
         if zoho_id is None:
-            log.info("reconcile_todoist_no_footer_skipped", todoist_id=item.get("id"))
+            log.debug("reconcile_todoist_not_in_sync_state", todoist_id=todoist_id)
             continue
         await enqueue_sync(redis, zoho_id, defer_secs=0)
 
@@ -155,6 +164,9 @@ async def orphan_sweep(ctx: dict) -> None:
     settings = get_settings()
 
     log.info("orphan_sweep_start")
+
+    # Sync client token from global state (proactive_refresh_loop updates token_state only).
+    zoho_client.access_token = token_state["access_token"]
 
     # Load all sync_state rows for the scan
     async with session_factory() as session:
@@ -212,17 +224,6 @@ async def orphan_sweep(ctx: dict) -> None:
         # Healthy path: both sides present
         # ------------------------------------------------------------------
         if not zoho_missing and not todoist_missing:
-            # EDGE-8: re-attach [zoho:ID] footer if missing
-            description = getattr(todoist_task, "description", "") or ""
-            if extract_zoho_id(description) is None:
-                log.warning(
-                    "orphan_sweep_missing_footer",
-                    todoist_task_id=state.todoist_task_id,
-                )
-                new_description = description + f"\n\n---\n[zoho:{state.zoho_task_id}]"
-                await todoist_client._api.update_task(
-                    state.todoist_task_id, description=new_description
-                )
             # Recovery: reset orphan_check_count if it was elevated
             if state.orphan_check_count > 0:
                 async with session_factory() as sess:

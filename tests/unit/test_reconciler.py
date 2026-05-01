@@ -167,22 +167,37 @@ async def test_reconcile_zoho_no_state_row_enqueues(complete_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Todoist delta items with [zoho:ID] footer → enqueue per item
+# Test 4: Todoist delta items in sync_state → enqueue per item
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_reconcile_todoist_delta(complete_env, monkeypatch):
-    """Todoist delta items with [zoho:ID] footer are enqueued with defer_secs=0."""
+    """Todoist delta items found in sync_state are enqueued with defer_secs=0."""
     from app.worker.reconciler import reconcile_sweep
 
     ctx = _make_reconciler_ctx()
-    factory, sess = _mock_session_factory_with_state(None)
-    ctx["session_factory"] = factory
+
+    # Session returns zoho_task_ids in order for the two Todoist items
+    sess = AsyncMock()
+    result_t1 = MagicMock()
+    result_t1.scalar_one_or_none = MagicMock(return_value="100")
+    result_t2 = MagicMock()
+    result_t2.scalar_one_or_none = MagicMock(return_value="200")
+    sess.execute = AsyncMock(side_effect=[result_t1, result_t2])
+    sess.begin = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=sess),
+        __aexit__=AsyncMock(return_value=None),
+    ))
+    factory_ctx = AsyncMock(
+        __aenter__=AsyncMock(return_value=sess),
+        __aexit__=AsyncMock(return_value=None),
+    )
+    ctx["session_factory"] = MagicMock(return_value=factory_ctx)
 
     ctx["zoho_client"].fetch_tasks_modified_since = AsyncMock(return_value=[])
     items = [
-        {"id": "T1", "description": "some task\n\n---\n[zoho:100]", "is_deleted": False},
-        {"id": "T2", "description": "[zoho:200]", "is_deleted": False},
+        {"id": "T1", "description": "some task", "is_deleted": False},
+        {"id": "T2", "description": "another task", "is_deleted": False},
     ]
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
@@ -205,12 +220,12 @@ async def test_reconcile_todoist_delta(complete_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Todoist items without footer → enqueue_sync NOT called
+# Test 5: Todoist items not in sync_state → enqueue_sync NOT called
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_reconcile_todoist_delta_no_footer_skipped(complete_env, monkeypatch):
-    """Items without [zoho:ID] footer are skipped; enqueue_sync not called for them."""
+async def test_reconcile_todoist_delta_not_in_sync_state_skipped(complete_env, monkeypatch):
+    """Items not found in sync_state are skipped; enqueue_sync not called for them."""
     from app.worker.reconciler import reconcile_sweep
 
     ctx = _make_reconciler_ctx()
@@ -219,9 +234,9 @@ async def test_reconcile_todoist_delta_no_footer_skipped(complete_env, monkeypat
 
     ctx["zoho_client"].fetch_tasks_modified_since = AsyncMock(return_value=[])
     items = [
-        {"id": "T1", "description": "No footer here", "is_deleted": False},
-        {"id": "T2", "description": "", "is_deleted": False},
-        {"id": "T3", "description": None, "is_deleted": False},
+        {"id": "T1", "description": "Some task", "is_deleted": False},
+        {"id": "T2", "description": "Another task", "is_deleted": False},
+        {"id": "T3", "description": "", "is_deleted": False},
     ]
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
@@ -251,7 +266,7 @@ async def test_reconcile_todoist_delta_is_deleted_skipped(complete_env, monkeypa
 
     ctx["zoho_client"].fetch_tasks_modified_since = AsyncMock(return_value=[])
     items = [
-        {"id": "T1", "description": "[zoho:999]", "is_deleted": True},
+        {"id": "T1", "description": "some task", "is_deleted": True},
     ]
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
@@ -445,9 +460,8 @@ def _healthy_zoho_response(zoho_task_id="Z1", owner_id="test-user-id"):
 
 
 def _healthy_todoist_task(zoho_task_id="Z1"):
-    """Return a mock Todoist task with a valid [zoho:ID] footer."""
     task = MagicMock()
-    task.description = f"some content\n\n---\n[zoho:{zoho_task_id}]"
+    task.description = "some content"
     return task
 
 
@@ -687,49 +701,6 @@ async def test_orphan_todoist_rate_limit_skipped(complete_env, monkeypatch):
     mock_delete_todoist.assert_not_called()
     mock_delete_zoho.assert_not_called()
     sess.get.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Test 18: Missing footer on healthy task → update_task called to re-attach
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_refooter_missing_footer(complete_env, monkeypatch):
-    """Todoist task exists + Zoho healthy, but no [zoho:ID] footer → update_task called to re-attach."""
-    from app.worker.reconciler import orphan_sweep
-
-    state = _make_state(orphan_check_count=0)
-    factory, sess = _mock_session_factory_with_rows([state])
-    ctx = _make_reconciler_ctx()
-    ctx["session_factory"] = factory
-
-    ctx["zoho_client"].get_task = AsyncMock(
-        return_value=_healthy_zoho_response("Z1", "test-user-id")
-    )
-    # Todoist task exists but has no footer
-    todoist_task = MagicMock()
-    todoist_task.description = "just some text, no footer here"
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value=todoist_task)
-    # Mock _api.update_task
-    mock_update_task = AsyncMock()
-    ctx["todoist_client"]._api = MagicMock()
-    ctx["todoist_client"]._api.update_task = mock_update_task
-
-    mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
-
-    await orphan_sweep(ctx)
-
-    # update_task must be called with the footer appended
-    mock_update_task.assert_called_once()
-    call_kwargs = mock_update_task.call_args
-    called_task_id = call_kwargs.args[0]
-    called_description = call_kwargs.kwargs.get("description") or call_kwargs.args[1]
-    assert called_task_id == state.todoist_task_id
-    assert f"[zoho:{state.zoho_task_id}]" in called_description
-
-    # Must NOT delete anything
-    mock_delete_todoist.assert_not_called()
-    mock_delete_zoho.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -393,18 +393,18 @@ def test_todoist_hmac_compare_uses_compare_digest():
 
 
 # ---------------------------------------------------------------------------
-# SYNC-8: item:added without footer discarded
+# item:added always discarded (echo or native — both are no-ops)
 # ---------------------------------------------------------------------------
 
-def test_todoist_item_added_no_footer_discarded(webhook_client):
-    """item:added with no [zoho:ID] footer → 200, no enqueue, no DB lookup (SYNC-8)."""
+def test_todoist_item_added_discarded(webhook_client):
+    """item:added → always 200, no enqueue, no DB lookup."""
     from app.main import app
     session_factory = _mock_session_factory_returning(None)
     app.state.session_factory = session_factory
 
     raw_body = json.dumps({
         "event_name": "item:added",
-        "event_data": {"id": "999", "project_id": "6gCPcWwM392GhXQh", "description": "no footer here"},
+        "event_data": {"id": "999", "project_id": "6gCPcWwM392GhXQh", "description": "some task"},
     }).encode("utf-8")
     sig = _make_hmac(raw_body)
 
@@ -416,40 +416,6 @@ def test_todoist_item_added_no_footer_discarded(webhook_client):
         )
     assert resp.status_code == 200
     mock_enqueue.assert_not_awaited()
-    session_factory.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# LOOP-5: item:added with footer enqueues (skips DB lookup)
-# ---------------------------------------------------------------------------
-
-def test_todoist_item_added_with_footer_enqueues(webhook_client):
-    """item:added with [zoho:ID] footer → enqueue with zoho_id; no DB lookup (LOOP-5)."""
-    from app.main import app
-    session_factory = _mock_session_factory_returning(None)
-    app.state.session_factory = session_factory
-
-    raw_body = json.dumps({
-        "event_name": "item:added",
-        "event_data": {
-            "id": "999",
-            "project_id": "6gCPcWwM392GhXQh",
-            "description": "body\n\n---\n[zoho:4567890]",
-        },
-    }).encode("utf-8")
-    sig = _make_hmac(raw_body)
-
-    with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
-        resp = webhook_client.post(
-            "/webhooks/todoist",
-            content=raw_body,
-            headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
-        )
-    assert resp.status_code == 200
-    mock_enqueue.assert_awaited_once()
-    args, kwargs = mock_enqueue.call_args
-    assert args[1] == "4567890"
-    assert kwargs.get("defer_secs") == 0
     session_factory.assert_not_called()
 
 

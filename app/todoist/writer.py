@@ -42,13 +42,12 @@ async def create_todoist_task(
     zoho_task_id: str,
     todoist_api: TodoistAPIAsync,
 ) -> str:
-    """SYNC-1/2/8: create a Todoist task with [zoho:ID] footer. Returns new task ID."""
+    """Create a Todoist task. Returns new task ID."""
     from app.core.config import get_settings  # lazy import — avoids module-level Settings() call
     due = date.fromisoformat(normalised.due_date) if normalised.due_date else None
     try:
         task = await todoist_api.add_task(
             content=normalised.title,
-            description=f"\n\n---\n[zoho:{zoho_task_id}]",
             project_id=get_settings().todoist_project_id,
             due_date=due,         # date object or None; SDK formats to YYYY-MM-DD
             priority=normalised.priority,
@@ -71,7 +70,6 @@ async def update_todoist_task(
     kwargs: dict = {
         "content": normalised.title,
         "priority": normalised.priority,
-        # description: NEVER pass — would destroy [zoho:ID] footer (Pitfall 6)
         # labels: NEVER pass — SYNC-9
     }
     if normalised.due_date is not None:
