@@ -9,5 +9,4 @@ httpx==0.28.1
 structlog
 python-dotenv>=1.0.0
 todoist-api-python==4.0.0
-zohocrmsdk
 resend==2.29.0

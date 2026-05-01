@@ -27,10 +27,10 @@ services:
 
   web:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn app.main:app --host 0.0.0.0 --port 3003
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "3003:3003"
     env_file: .env
     depends_on:
       postgres:
