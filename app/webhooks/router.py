@@ -16,7 +16,6 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models import SyncState
-from app.todoist.normalise import extract_zoho_id
 from app.worker.enqueue import enqueue_sync
 
 log = get_logger(__name__)
@@ -87,7 +86,7 @@ async def todoist_webhook(request: Request):
     after signature verification succeeds.
 
     Routing:
-      item:added   → check footer; discard if absent (SYNC-8); enqueue if present (LOOP-5)
+      item:added   → discard (echo of our own write or native task; both cases no-op)
       item:updated / item:completed / item:uncompleted → lookup sync_state → enqueue
       item:deleted → lookup sync_state → enqueue (worker handles delete path)
       other        → log DEBUG, return 200
@@ -139,24 +138,15 @@ async def todoist_webhook(request: Request):
     session_factory = request.app.state.session_factory
 
     if event_name == "item:added":
-        description = event_data.get("description") or ""
-        zoho_id = extract_zoho_id(description)
-        if zoho_id is None:
-            # SYNC-8: Todoist-native task, not sync-managed.
-            log.info(
-                "todoist_item_added_no_footer_discarded",
-                todoist_task_id=todoist_task_id,
-            )
-            return {"ok": True}
-        # LOOP-5: sync-managed task (footer present). Enqueue; the worker's
-        # echo_suppressed path will catch the self-triggered loop.
-        await enqueue_sync(redis, zoho_id, defer_secs=0)
+        # Always discard: either a native Todoist task (not synced to Zoho in v1)
+        # or an echo of our own Zoho→Todoist write (suppressed by hash-match anyway).
+        log.debug("todoist_item_added_discarded", todoist_task_id=todoist_task_id)
         return {"ok": True}
 
     if event_name in ("item:updated", "item:completed", "item:uncompleted"):
         zoho_id = await _lookup_zoho_id(session_factory, todoist_task_id)
         if zoho_id is None:
-            # EDGE-8: footer-less or unsynced task; reconciler (Phase 7) will catch up.
+            # Unsynced task; reconciler will catch up.
             log.warning(
                 "todoist_event_no_sync_state",
                 event_name=event_name,

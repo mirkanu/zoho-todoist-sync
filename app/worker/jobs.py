@@ -14,9 +14,8 @@ Pipeline:
 
 Retry: transient API errors raise Retry(defer=RETRY_DELAYS[job_try]).
 LWW direction: Zoho wins on simultaneous divergence (SYNC-11).
-Bootstrap race (LOOP-5): sync-managed Todoist tasks carry [zoho:ID] footer; their
-hash will match sync_state.last_hash after a legitimate sync so echo_suppressed
-path catches the resulting self-triggered webhook.
+Bootstrap race (LOOP-5): after a legitimate Zoho→Todoist write, the resulting
+Todoist webhook is suppressed by the echo_suppressed path (hash match).
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ from app.todoist.client import (
     TodoistNotFoundError,
     TodoistRateLimitError,
 )
-from app.todoist.normalise import extract_zoho_id, todoist_task_to_normalised
+from app.todoist.normalise import todoist_task_to_normalised
 from app.todoist.writer import (
     complete_todoist_task,
     create_todoist_task,
@@ -44,6 +43,7 @@ from app.todoist.writer import (
 )
 from app.zoho.client import (
     ZohoAPIError,
+    ZohoAuthError,
     ZohoNotFoundError,
     ZohoRateLimitError,
 )
@@ -88,6 +88,23 @@ async def sync_task(ctx: dict, zoho_task_id: str) -> None:
         await _execute_sync(
             zoho_task_id, session_factory, zoho_client, todoist_client, job_try
         )
+    except ZohoAuthError as exc:
+        # Token stale (proactive_refresh_loop updates token_state but not client.access_token).
+        # Refresh now so the retry picks up the new token.
+        from app.zoho.token_manager import (
+            KV_ACCESS_TOKEN_KEY, KV_EXPIRES_AT_KEY,
+            refresh_access_token, upsert_kv,
+        )
+        settings = get_settings()
+        new_token, new_expires_at = await refresh_access_token(settings)
+        token_state["access_token"] = new_token
+        token_state["expires_at"] = new_expires_at
+        async with session_factory() as _s:
+            await upsert_kv(_s, KV_ACCESS_TOKEN_KEY, new_token)
+            await upsert_kv(_s, KV_EXPIRES_AT_KEY, new_expires_at.isoformat())
+            await _s.commit()
+        log.warning("sync_task_auth_refreshed_retry", zoho_task_id=zoho_task_id, attempt=job_try)
+        raise Retry(defer=RETRY_DELAYS.get(job_try, 60)) from exc
     except (ZohoRateLimitError, ZohoAPIError, TodoistRateLimitError, TodoistAPIError) as exc:
         delay = RETRY_DELAYS.get(job_try, 60)
         log.error(
@@ -116,6 +133,8 @@ async def _execute_sync(
     job_try: int,
 ) -> None:
     # [1] Fetch live Zoho state BEFORE any DB lock (Pitfall 2).
+    # Sync client token from global state (proactive_refresh_loop updates token_state only).
+    zoho_client.access_token = token_state["access_token"]
     settings = get_settings()
     zoho_response = await zoho_client.get_task(zoho_task_id)
     zoho_record = (zoho_response.get("data") or [{}])[0]
@@ -133,7 +152,8 @@ async def _execute_sync(
         return
 
     # [3] Fetch live Todoist state.
-    todoist_norm = await todoist_client.get_task(state.todoist_task_id)
+    todoist_task = await todoist_client.fetch_todoist_task(state.todoist_task_id)
+    todoist_norm = todoist_task_to_normalised(todoist_task)
 
     # [4] Compute canonical hashes.
     zoho_hash = canonical_hash(zoho_norm)

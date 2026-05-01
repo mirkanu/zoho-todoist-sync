@@ -120,13 +120,12 @@ async def test_startup_sync_incremental_on_stored_token(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_startup_sync_discards_items_without_footer(monkeypatch):
-    # structlog bypasses stdlib caplog; use a spy on log.info instead.
+async def test_startup_sync_counts_deleted_and_processed(monkeypatch):
     from app.todoist import sync_manager as sm
 
     log_events = []
     def spy_log(event, **kw):
-        log_events.append(event)
+        log_events.append((event, kw))
     monkeypatch.setattr(sm.log, "info", spy_log)
 
     session = AsyncMock()
@@ -137,10 +136,9 @@ async def test_startup_sync_discards_items_without_footer(monkeypatch):
     session_factory = MagicMock(return_value=session)
 
     items = [
-        {"id": "1", "description": "Has footer\n[zoho:111]", "is_deleted": False, "project_id": "p"},
-        {"id": "2", "description": "No footer here", "is_deleted": False, "project_id": "p"},
-        {"id": "3", "description": "", "is_deleted": False, "project_id": "p"},
-        {"id": "4", "description": "[zoho:444]", "is_deleted": True, "project_id": "p"},
+        {"id": "1", "description": "Some task", "is_deleted": False, "project_id": "p"},
+        {"id": "2", "description": "Another task", "is_deleted": False, "project_id": "p"},
+        {"id": "3", "description": "", "is_deleted": True, "project_id": "p"},
     ]
     todoist_client = MagicMock()
     todoist_client.fetch_sync_delta = AsyncMock(return_value=(items, "tok"))
@@ -148,22 +146,35 @@ async def test_startup_sync_discards_items_without_footer(monkeypatch):
     settings = MagicMock()
     settings.todoist_project_id = "p"
 
-    monkeypatch.setattr(
-        "app.todoist.sync_manager.upsert_kv",
-        AsyncMock(),
-    )
+    monkeypatch.setattr("app.todoist.sync_manager.upsert_kv", AsyncMock())
 
     await startup_sync(todoist_client, session_factory, settings)
 
-    # Items 2 and 3 have no footer; item 4 is deleted; item 1 processed.
-    assert "todoist_item_no_footer_discarded" in log_events
-    assert "todoist_item_deleted_skipped" in log_events
-    assert "todoist_startup_sync_complete" in log_events
+    complete = next((kw for ev, kw in log_events if ev == "todoist_startup_sync_complete"), None)
+    assert complete is not None
+    assert complete["total"] == 3
+    assert complete["processed"] == 2
+    assert complete["deleted"] == 1
 
 
 @pytest.mark.asyncio
 async def test_startup_sync_persists_token_before_processing(monkeypatch):
     """SEED-7 critical: new sync_token is saved BEFORE iterating items."""
+    from app.todoist import sync_manager as sm
+
+    call_order = []
+    async def fake_upsert(s, k, v):
+        call_order.append(("upsert", k, v))
+    monkeypatch.setattr("app.todoist.sync_manager.upsert_kv", fake_upsert)
+
+    # Spy on log.info to detect when item processing completes
+    original_log_info = sm.log.info
+    def spy_log(event, **kw):
+        if event == "todoist_startup_sync_complete":
+            call_order.append(("complete", event))
+        original_log_info(event, **kw)
+    monkeypatch.setattr(sm.log, "info", spy_log)
+
     session = AsyncMock()
     session.__aenter__.return_value = session
     session.__aexit__.return_value = None
@@ -172,34 +183,18 @@ async def test_startup_sync_persists_token_before_processing(monkeypatch):
     session_factory = MagicMock(return_value=session)
 
     todoist_client = MagicMock()
-    items_with_footer = [
-        {"id": "1", "description": "[zoho:111]", "is_deleted": False, "project_id": "p"},
-    ]
     todoist_client.fetch_sync_delta = AsyncMock(
-        return_value=(items_with_footer, "must-be-saved-first")
+        return_value=([{"id": "1", "is_deleted": False}], "must-be-saved-first")
     )
-
-    call_order = []
-    async def fake_upsert(s, k, v):
-        call_order.append(("upsert", k, v))
-    monkeypatch.setattr("app.todoist.sync_manager.upsert_kv", fake_upsert)
-
-    # Spy on extract_zoho_id to record when processing happens
-    from app.todoist import sync_manager as sm
-    original_extract = sm.extract_zoho_id
-    def spy_extract(d):
-        call_order.append(("extract", d))
-        return original_extract(d)
-    monkeypatch.setattr(sm, "extract_zoho_id", spy_extract)
 
     settings = MagicMock()
     settings.todoist_project_id = "p"
 
     await startup_sync(todoist_client, session_factory, settings)
 
-    # Upsert (token save) must happen before any extract call (item processing)
+    # Upsert (token save) must happen before item processing completes
     upsert_idx = next(i for i, c in enumerate(call_order) if c[0] == "upsert")
-    extract_idx = next(i for i, c in enumerate(call_order) if c[0] == "extract")
-    assert upsert_idx < extract_idx, (
+    complete_idx = next(i for i, c in enumerate(call_order) if c[0] == "complete")
+    assert upsert_idx < complete_idx, (
         f"sync_token must be persisted BEFORE item processing. Got order: {call_order}"
     )

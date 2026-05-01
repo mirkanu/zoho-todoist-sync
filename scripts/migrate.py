@@ -92,7 +92,6 @@ async def migrate_one_task(
     normalised = zoho_record_to_normalised(record, terminal_statuses)
     last_hash = canonical_hash(normalised)
     todoist_id = record.get(zoho_field_api_name) or None
-    footer = f"\n\n---\n[zoho:{zoho_task_id}]"
 
     if todoist_id:
         try:
@@ -110,13 +109,7 @@ async def migrate_one_task(
             counters["recreated"] += 1
             return
 
-        # SEED-3: replace description entirely with footer (not append).
-        # NOTE: must NOT use update_todoist_task() — it strips description (Pitfall 5).
         if not dry_run:
-            await todoist_client._api.update_task(
-                str(todoist_id),
-                description=footer,
-            )
             await _upsert_sync_state(session_factory, zoho_task_id, str(todoist_id), last_hash)
         counters["linked"] += 1
         return
@@ -135,11 +128,13 @@ async def _upsert_sync_state(
     todoist_task_id: str,
     last_hash: str,
 ) -> None:
+    now = datetime.now(timezone.utc)
     async with session_factory() as session:
         row = SyncState(
             zoho_task_id=zoho_task_id,
             todoist_task_id=todoist_task_id,
             last_hash=last_hash,
+            last_synced_at=now,
         )
         session.add(row)
         await session.commit()

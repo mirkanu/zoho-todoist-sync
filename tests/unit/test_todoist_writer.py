@@ -16,7 +16,7 @@ from app.core.normalise import NormalisedTask
 
 @pytest.mark.asyncio
 async def test_create_todoist_task_builds_correct_payload(complete_env):
-    """SYNC-1, SYNC-2, SYNC-8: create builds correct payload with footer, due_date as date, priority."""
+    """create builds correct payload with due_date as date object and priority; no description."""
     mock_api = AsyncMock()
     mock_task = MagicMock()
     mock_task.id = "T999"
@@ -28,8 +28,7 @@ async def test_create_todoist_task_builds_correct_payload(complete_env):
     assert result == "T999"
     call_kwargs = mock_api.add_task.call_args.kwargs
     assert call_kwargs["content"] == "Do thing"
-    assert "[zoho:Z111]" in call_kwargs["description"]
-    assert "\n\n---\n" in call_kwargs["description"]
+    assert "description" not in call_kwargs
     assert call_kwargs["priority"] == 3
     assert isinstance(call_kwargs["due_date"], date)
     assert "due_datetime" not in call_kwargs  # SYNC-2 hard constraint

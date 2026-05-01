@@ -1,11 +1,7 @@
 # app/core/normalise.py
-import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-
-FOOTER_RE = re.compile(r"\n*---\n\[zoho:\d+\]\s*$")
-ZOHO_ID_RE = re.compile(r"\[zoho:(\d+)\]")   # exported for use in Phases 3+
 
 @dataclass(frozen=True)
 class NormalisedTask:
@@ -39,8 +35,3 @@ def normalise_title(raw: str | None) -> str:
     return text.strip()
 
 
-def strip_footer(description: str | None) -> str:
-    """Remove the [zoho:ID] footer before hashing."""
-    if not description:
-        return ""
-    return FOOTER_RE.sub("", description).strip()
