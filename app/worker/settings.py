@@ -34,7 +34,7 @@ from app.worker.daily_summary import daily_summary
 from app.worker.jobs import sync_task
 from app.worker.reconciler import orphan_sweep, reconcile_sweep, renew_zoho_webhook
 from app.zoho.client import ZohoClient
-from app.zoho.state import token_state
+from app.zoho.state import token_state, zoho_field_cache
 from app.zoho.token_manager import (
     KV_ACCESS_TOKEN_KEY,
     KV_EXPIRES_AT_KEY,
@@ -80,8 +80,12 @@ async def on_startup(ctx: dict) -> None:
     token_state["access_token"] = access_token
     token_state["expires_at"] = expires_at
 
-    ctx["zoho_client"] = ZohoClient(access_token=access_token)
+    zoho_client = ZohoClient(access_token=access_token)
+    ctx["zoho_client"] = zoho_client
     ctx["todoist_client"] = TodoistClient(api_token=settings.todoist_api_token)
+
+    meta = await zoho_client.get_fields_metadata("Tasks")
+    zoho_field_cache["todoist_task_id_api_name"] = meta["todoist_task_id_api_name"]
 
     # Keep in-memory token fresh while the worker runs.
     # ZohoClient reads token_state["access_token"] by reference, so refreshes
