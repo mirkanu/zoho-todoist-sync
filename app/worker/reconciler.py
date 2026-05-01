@@ -22,11 +22,49 @@ from app.zoho.state import token_state
 from app.zoho.token_manager import upsert_kv
 from app.zoho.writer import delete_zoho_task
 
+import httpx
+
 log = get_logger(__name__)
 
 KV_RECONCILER_LAST_RUN = "reconciler_last_run"
 KV_ORPHAN_SWEEP_LAST_RUN = "orphan_sweep_last_run"
 RECONCILE_LOOKBACK_MINUTES = 20
+
+_ZOHO_WEBHOOK_URL = "https://zoho-sync.gsdlabs.dev/webhooks/zoho"
+_ZOHO_CHANNEL_ID = "1"
+
+
+async def renew_zoho_webhook(ctx: dict) -> None:
+    """Re-register the Zoho notification channel every 45 min.
+
+    Zoho caps channel_expiry to ~2 hours (bound by the OAuth access token TTL).
+    Re-posting with the same channel_id extends the expiry.
+    """
+    settings = get_settings()
+    access_token = token_state["access_token"]
+    payload = {
+        "watch": [{
+            "channel_id": _ZOHO_CHANNEL_ID,
+            "events": ["Tasks.create", "Tasks.edit", "Tasks.delete"],
+            "token": "zoho-sync-webhook-token",
+            "notify_url": _ZOHO_WEBHOOK_URL,
+            "channel_expiry": (
+                datetime.now(timezone.utc) + timedelta(hours=2)
+            ).strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        }]
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://www.zohoapis.eu/crm/v6/actions/watch",
+            headers={"Authorization": f"Zoho-oauthtoken {access_token}"},
+            json=payload,
+        )
+    result = resp.json()
+    status = (result.get("watch") or [{}])[0].get("code", "UNKNOWN")
+    if status == "SUCCESS":
+        log.info("zoho_webhook_renewed")
+    else:
+        log.warning("zoho_webhook_renewal_failed", response=result)
 
 
 async def reconcile_sweep(ctx: dict) -> None:
