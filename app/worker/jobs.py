@@ -26,6 +26,7 @@ from typing import Any
 from arq import Retry
 from sqlalchemy import select
 
+from app.core.config import get_settings
 from app.core.hash import canonical_hash
 from app.core.logging import get_logger
 from app.core.normalise import NormalisedTask
@@ -115,8 +116,10 @@ async def _execute_sync(
     job_try: int,
 ) -> None:
     # [1] Fetch live Zoho state BEFORE any DB lock (Pitfall 2).
-    zoho_record = await zoho_client.get_task(zoho_task_id)
-    zoho_norm = zoho_record_to_normalised(zoho_record)
+    settings = get_settings()
+    zoho_response = await zoho_client.get_task(zoho_task_id)
+    zoho_record = (zoho_response.get("data") or [{}])[0]
+    zoho_norm = zoho_record_to_normalised(zoho_record, settings.zoho_terminal_statuses_list)
 
     # [2] Read sync_state row (no lock) — decide new-task vs. update path.
     async with session_factory() as session:

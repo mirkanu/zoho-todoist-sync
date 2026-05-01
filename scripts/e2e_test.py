@@ -16,6 +16,8 @@ import time
 from datetime import datetime, timezone
 
 import httpx
+from arq import create_pool
+from arq.connections import RedisSettings
 from dotenv import load_dotenv
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -24,6 +26,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.models import SyncEvent
 from app.todoist.client import TodoistClient
+from app.worker.enqueue import enqueue_sync
 from app.zoho.client import ZohoClient, ZOHO_EU_BASE_URL
 from app.zoho.state import token_state, zoho_field_cache
 from app.zoho.token_manager import (
@@ -34,7 +37,6 @@ from app.zoho.writer import (
     _auth_headers,
     complete_zoho_task,
     delete_zoho_task,
-    update_zoho_task,
 )
 
 log = get_logger(__name__)
@@ -57,11 +59,12 @@ async def create_zoho_test_task(subject: str, owner_id: str, access_token: str) 
 
 async def find_todoist_task_for_zoho(todoist_client: TodoistClient, project_id: str, zoho_task_id: str):
     """Return the Todoist task whose description contains [zoho:{zoho_task_id}], or None."""
-    tasks = await todoist_client._api.get_tasks(project_id=project_id)
     marker = f"[zoho:{zoho_task_id}]"
-    for t in tasks:
-        if marker in (t.description or ""):
-            return t
+    tasks = await todoist_client._api.get_tasks(project_id=project_id)
+    async for page in tasks:
+        for t in page:
+            if marker in (t.description or ""):
+                return t
     return None
 
 
@@ -106,6 +109,7 @@ async def run_e2e(
     todoist_client: TodoistClient,
     project_id: str,
     session_factory,
+    redis,
 ) -> None:
     ts = int(time.time())
     subject = f"E2E test {ts}"
@@ -118,7 +122,12 @@ async def run_e2e(
         zoho_id = await create_zoho_test_task(subject, owner_id, access_token)
         print(f"[E2E] Zoho task created: {zoho_id}")
 
-        # 2. Wait for Todoist counterpart (D-06)
+        # 2. Enqueue sync directly (Zoho suppresses webhooks for same-app API changes)
+        # Use no _job_id so E2E steps don't dedup each other (keep_result=300s would block)
+        print(f"[E2E] Enqueueing sync job for {zoho_id} ...")
+        await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
+
+        # 3. Wait for Todoist counterpart (D-06)
         print(f"[E2E] Waiting up to {POLL_TIMEOUT_S}s for Todoist propagation ...")
         t = await poll_until(
             lambda: find_todoist_task_for_zoho(todoist_client, project_id, zoho_id),
@@ -128,38 +137,51 @@ async def run_e2e(
         assert subject in t.content, f"Title mismatch: expected {subject!r} in {t.content!r}"
         print(f"[E2E] Todoist task linked: {todoist_id}")
 
-        # 3. Edit subject in Zoho → verify Todoist update
+        # 4. Edit subject in Zoho → verify Todoist update
         new_subject = f"{subject} (edited)"
         print(f"[E2E] Editing Zoho subject to {new_subject!r} ...")
-        await update_zoho_task(zoho_id, {"Subject": new_subject}, access_token)
+        async with httpx.AsyncClient() as client:
+            await client.put(f"{ZOHO_EU_BASE_URL}/Tasks/{zoho_id}",
+                headers=_auth_headers(access_token),
+                json={"data": [{"Subject": new_subject}]})
+        await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
             lambda: _check_todoist_field(todoist_client, project_id, zoho_id, "content", new_subject),
             error_msg="Todoist content did not update after Zoho subject edit",
         )
         print("[E2E] Subject propagation verified")
 
-        # 4. Edit due_date in Zoho → verify Todoist due
+        # 5. Edit due_date in Zoho → verify Todoist due
         new_due = "2026-12-31"
         print(f"[E2E] Editing Zoho Due_Date to {new_due} ...")
-        await update_zoho_task(zoho_id, {"Due_Date": new_due}, access_token)
+        async with httpx.AsyncClient() as client:
+            await client.put(f"{ZOHO_EU_BASE_URL}/Tasks/{zoho_id}",
+                headers=_auth_headers(access_token),
+                json={"data": [{"Due_Date": new_due}]})
+        await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
             lambda: _check_todoist_due(todoist_client, project_id, zoho_id, new_due),
             error_msg="Todoist due.date did not match after Zoho Due_Date edit",
         )
         print("[E2E] Due date propagation verified")
 
-        # 5. Edit priority in Zoho → verify Todoist priority=4 (Highest)
+        # 6. Edit priority in Zoho → verify Todoist priority=4 (Highest)
         print("[E2E] Editing Zoho Priority to Highest ...")
-        await update_zoho_task(zoho_id, {"Priority": "Highest"}, access_token)
+        async with httpx.AsyncClient() as client:
+            await client.put(f"{ZOHO_EU_BASE_URL}/Tasks/{zoho_id}",
+                headers=_auth_headers(access_token),
+                json={"data": [{"Priority": "Highest"}]})
+        await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
             lambda: _check_todoist_field(todoist_client, project_id, zoho_id, "priority", 4),
             error_msg="Todoist priority did not update to 4 after Zoho Priority=Highest",
         )
         print("[E2E] Priority propagation verified")
 
-        # 6. Complete Zoho task → verify Todoist task closed
+        # 7. Complete Zoho task → verify Todoist task closed
         print("[E2E] Completing Zoho task ...")
         await complete_zoho_task(zoho_id, access_token)
+        await redis.enqueue_job("sync_task", zoho_id, _defer_by=2)
         await poll_until(
             lambda: _check_todoist_completed(todoist_client, project_id, zoho_id, todoist_id),
             error_msg="Todoist task was not closed after Zoho completion",
@@ -223,6 +245,7 @@ async def main() -> int:
     meta = await zoho_client.get_fields_metadata("Tasks")
     zoho_field_cache["todoist_task_id_api_name"] = meta["todoist_task_id_api_name"]
 
+    redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     todoist_client = TodoistClient(api_token=settings.todoist_api_token)
     try:
         await run_e2e(
@@ -231,6 +254,7 @@ async def main() -> int:
             todoist_client=todoist_client,
             project_id=settings.todoist_project_id,
             session_factory=session_factory,
+            redis=redis,
         )
         return 0
     except AssertionError as e:
@@ -238,6 +262,7 @@ async def main() -> int:
         return 1
     finally:
         await todoist_client.close()
+        await redis.aclose()
         await engine.dispose()
 
 
