@@ -62,7 +62,7 @@ log = get_logger(__name__)
 RETRY_DELAYS: dict[int, int] = {1: 5, 2: 15, 3: 60}
 
 
-async def sync_task(ctx: dict, zoho_task_id: str) -> None:
+async def sync_task(ctx: dict, zoho_task_id: str, source: str = "worker") -> None:
     """Full Zoho <-> Todoist sync pipeline for one task. arq job entry point.
 
     ctx keys (populated by WorkerSettings.on_startup + arq itself):
@@ -86,7 +86,7 @@ async def sync_task(ctx: dict, zoho_task_id: str) -> None:
 
     try:
         await _execute_sync(
-            zoho_task_id, session_factory, zoho_client, todoist_client, job_try
+            zoho_task_id, session_factory, zoho_client, todoist_client, job_try, source
         )
     except ZohoAuthError as exc:
         # Token stale (proactive_refresh_loop updates token_state but not client.access_token).
@@ -131,6 +131,7 @@ async def _execute_sync(
     zoho_client: Any,
     todoist_client: Any,
     job_try: int,
+    source: str = "worker",
 ) -> None:
     # [1] Fetch live Zoho state BEFORE any DB lock (Pitfall 2).
     # Sync client token from global state (proactive_refresh_loop updates token_state only).
@@ -148,7 +149,7 @@ async def _execute_sync(
         state = result.scalar_one_or_none()
 
     if state is None:
-        await _handle_new_task(zoho_task_id, zoho_norm, todoist_client, session_factory)
+        await _handle_new_task(zoho_task_id, zoho_norm, todoist_client, session_factory, source)
         return
 
     # [3] Fetch live Todoist state.
@@ -175,7 +176,7 @@ async def _execute_sync(
                 session.add(SyncEvent(
                     zoho_task_id=zoho_task_id,
                     action="echo_suppressed",
-                    source="worker",
+                    source=source,
                     detail={"hash": last_hash[:8]},
                 ))
                 log.info("sync_task_echo_suppressed", zoho_task_id=zoho_task_id)
@@ -207,7 +208,7 @@ async def _execute_sync(
             session.add(SyncEvent(
                 zoho_task_id=zoho_task_id,
                 action=action,
-                source="worker",
+                source=source,
                 detail={"direction": direction, "new_hash": new_hash[:8]},
             ))
             log.info(
@@ -244,6 +245,7 @@ async def _handle_new_task(
     zoho_norm: NormalisedTask,
     todoist_client: Any,
     session_factory: Any,
+    source: str = "worker",
 ) -> None:
     """No sync_state row -> this is a new Zoho task. Create in Todoist + link + log."""
     todoist_id = await create_todoist_task(zoho_norm, zoho_task_id, todoist_client._api)
@@ -262,7 +264,7 @@ async def _handle_new_task(
             session.add(SyncEvent(
                 zoho_task_id=zoho_task_id,
                 action="sync",
-                source="worker",
+                source=source,
                 detail={"direction": "zoho_to_todoist", "created": True},
             ))
     log.info(

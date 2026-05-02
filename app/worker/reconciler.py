@@ -103,7 +103,7 @@ async def reconcile_sweep(ctx: dict) -> None:
 
         if state is None or state.last_hash != zoho_hash:
             log.info("reconcile_zoho_enqueued", zoho_task_id=zoho_task_id)
-            await enqueue_sync(redis, zoho_task_id, defer_secs=0)
+            await enqueue_sync(redis, zoho_task_id, defer_secs=0, source="reconciler")
 
     # ------------------------------------------------------------------
     # Todoist side: incremental delta via sync_token
@@ -135,7 +135,7 @@ async def reconcile_sweep(ctx: dict) -> None:
         if zoho_id is None:
             log.debug("reconcile_todoist_not_in_sync_state", todoist_id=todoist_id)
             continue
-        await enqueue_sync(redis, zoho_id, defer_secs=0)
+        await enqueue_sync(redis, zoho_id, defer_secs=0, source="reconciler")
 
     # ------------------------------------------------------------------
     # Persist last-run timestamp

@@ -51,7 +51,7 @@ async def zoho_webhook(request: Request):
     settings = get_settings()
     redis = request.app.state.redis
     await enqueue_sync(
-        redis, zoho_task_id, defer_secs=settings.zoho_job_defer_secs
+        redis, zoho_task_id, defer_secs=settings.zoho_job_defer_secs, source="zoho_webhook"
     )
     log.info(
         "zoho_webhook_enqueued",
@@ -153,7 +153,7 @@ async def todoist_webhook(request: Request):
                 todoist_task_id=todoist_task_id,
             )
             return {"ok": True}
-        await enqueue_sync(redis, zoho_id, defer_secs=0)
+        await enqueue_sync(redis, zoho_id, defer_secs=0, source="todoist_webhook")
         return {"ok": True}
 
     if event_name == "item:deleted":
@@ -166,7 +166,7 @@ async def todoist_webhook(request: Request):
             return {"ok": True}
         # Worker's sync_task handles the delete path via refetch (ZohoNotFoundError,
         # or explicit deletion semantics in Phase 7); we hand off the same way.
-        await enqueue_sync(redis, zoho_id, defer_secs=0)
+        await enqueue_sync(redis, zoho_id, defer_secs=0, source="todoist_webhook")
         return {"ok": True}
 
     log.debug("todoist_event_ignored", event_name=event_name)
