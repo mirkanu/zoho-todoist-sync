@@ -80,6 +80,7 @@ None.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260501-m0t | Remove [zoho:ID] footer from Todoist task descriptions | 2026-05-01 | 383f270 | [260501-m0t-remove-zoho-id-footer-from-todoist-task-](./quick/260501-m0t-remove-zoho-id-footer-from-todoist-task-/) |
+| 260501-qxw | Fix OBS-2 source values + write Phase 08 VERIFICATION.md | 2026-05-02 | e072796 | [260501-qxw-fix-obs2-source-and-phase08-verification](./quick/260501-qxw-fix-obs2-source-and-phase08-verification/) |
 
 ### Blockers/Concerns
 
