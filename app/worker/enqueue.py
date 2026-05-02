@@ -22,6 +22,7 @@ async def enqueue_sync(
     redis: "ArqRedis",
     zoho_task_id: str,
     defer_secs: int = 0,
+    source: str = "worker",
 ) -> None:
     """Enqueue sync_task with per-task dedup (_job_id) and optional defer (_defer_by).
 
@@ -31,6 +32,7 @@ async def enqueue_sync(
     job = await redis.enqueue_job(
         "sync_task",
         zoho_task_id,
+        source,
         _job_id=f"sync:{zoho_task_id}",
         _defer_by=defer_secs,
     )
@@ -39,10 +41,12 @@ async def enqueue_sync(
             "sync_task_dedup_dropped",
             zoho_task_id=zoho_task_id,
             defer_secs=defer_secs,
+            source=source,
         )
     else:
         log.info(
             "sync_task_enqueued",
             zoho_task_id=zoho_task_id,
             defer_secs=defer_secs,
+            source=source,
         )
