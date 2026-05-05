@@ -149,7 +149,7 @@ async def _execute_sync(
         state = result.scalar_one_or_none()
 
     if state is None:
-        await _handle_new_task(zoho_task_id, zoho_norm, todoist_client, session_factory, source)
+        await _handle_new_task(zoho_task_id, zoho_record, zoho_norm, todoist_client, session_factory, source)
         return
 
     # [3] Fetch live Todoist state.
@@ -242,13 +242,19 @@ async def _apply_write(
 
 async def _handle_new_task(
     zoho_task_id: str,
+    zoho_record: dict,              # NEW — raw record for What_Id extraction (DESC-1)
     zoho_norm: NormalisedTask,
     todoist_client: Any,
     session_factory: Any,
     source: str = "worker",
 ) -> None:
     """No sync_state row -> this is a new Zoho task. Create in Todoist + link + log."""
-    todoist_id = await create_todoist_task(zoho_norm, zoho_task_id, todoist_client._api)
+    from app.todoist.description import build_task_description, _extract_related_to_name
+    related_to_name = _extract_related_to_name(zoho_record)
+    description = build_task_description(zoho_task_id, related_to_name)
+    todoist_id = await create_todoist_task(
+        zoho_norm, zoho_task_id, todoist_client._api, description=description
+    )
     await write_todoist_id_to_zoho(zoho_task_id, todoist_id, token_state["access_token"])
     new_hash = canonical_hash(zoho_norm)
     now = datetime.now(timezone.utc)
