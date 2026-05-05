@@ -1,4 +1,4 @@
-"""arq WorkerSettings + lifecycle hooks for the Railway `worker` service.
+"""arq WorkerSettings + lifecycle hooks for the worker service.
 
 Startup pattern mirrors app/main.py lifespan:
   1. Configure structlog, set resend.api_key.
