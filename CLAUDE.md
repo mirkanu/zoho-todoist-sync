@@ -1,12 +1,26 @@
 # zoho-todoist-sync
 
-Two-way sync between Zoho CRM Tasks (assigned to me) and a Todoist project. Runs as two Railway services (`web` + `worker`). No UI.
+Two-way sync between Zoho CRM Tasks (assigned to me) and a Todoist project. Runs as two Hetzner Docker services (`web` + `worker`). No UI.
 
 ## Stack
 
-- Python 3.12 + FastAPI + arq + Postgres + Redis on Railway
+- Python 3.12 + FastAPI + arq + Postgres + Redis on Hetzner VPS (migrated from Railway, 2026-04-25)
 - `todoist-api-python`, Zoho official Python SDK
 - Resend for email notifications
+
+## Deployment
+
+Migrated from Railway to Hetzner VPS on 2026-04-25.
+
+| | |
+|---|---|
+| **Host** | Hetzner VPS — `hetzner-vps` (37.27.212.18) |
+| **Web container** | `zoho-sync-web`, port 3003 on host |
+| **Worker container** | `zoho-sync-worker` (no exposed port) |
+| **Redis** | `zoho-sync-redis` container |
+| **Database** | `zoho-sync-db` PostgreSQL container |
+| **Compose file** | `/home/services/hetzner-vps/docker-compose.yml` |
+| **Railway** | No longer used |
 
 ## Key Facts
 
