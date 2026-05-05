@@ -41,18 +41,22 @@ async def create_todoist_task(
     normalised: NormalisedTask,
     zoho_task_id: str,
     todoist_api: TodoistAPIAsync,
+    description: str | None = None,  # NEW — DESC-1/2/3/4
 ) -> str:
     """Create a Todoist task. Returns new task ID."""
     from app.core.config import get_settings  # lazy import — avoids module-level Settings() call
     due = date.fromisoformat(normalised.due_date) if normalised.due_date else None
+    kwargs: dict = {
+        "content": normalised.title,
+        "project_id": get_settings().todoist_project_id,
+        "due_date": due,         # date object or None; SDK formats to YYYY-MM-DD
+        "priority": normalised.priority,
+        # labels intentionally omitted (SYNC-9)
+    }
+    if description is not None:
+        kwargs["description"] = description
     try:
-        task = await todoist_api.add_task(
-            content=normalised.title,
-            project_id=get_settings().todoist_project_id,
-            due_date=due,         # date object or None; SDK formats to YYYY-MM-DD
-            priority=normalised.priority,
-            # labels intentionally omitted (SYNC-9)
-        )
+        task = await todoist_api.add_task(**kwargs)
     except httpx.HTTPStatusError as exc:
         _raise_typed(exc.response.status_code, f"add_task zoho:{zoho_task_id}", exc)
     except Exception:
