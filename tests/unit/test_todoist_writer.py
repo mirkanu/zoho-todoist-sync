@@ -221,3 +221,35 @@ async def test_create_todoist_task_idempotency_same_inputs(complete_env):
     # Writer calls through twice — deduplication is caller responsibility
     assert mock_api.add_task.await_count == 2
     assert result1 == result2 == "T999"
+
+
+@pytest.mark.asyncio
+async def test_create_todoist_task_with_description(complete_env):
+    """DESC-1+2: when description provided, add_task receives description kwarg."""
+    mock_api = AsyncMock()
+    mock_task = MagicMock()
+    mock_task.id = "T888"
+    mock_api.add_task = AsyncMock(return_value=mock_task)
+
+    normalised = NormalisedTask(title="Rich task", due_date=None, priority=2, is_completed=False)
+    desc = "Re: Acme Deal\nhttps://crm.zoho.eu/crm/org20100156718/tab/Tasks/Z1\nNot synced back to Zoho."
+    result = await create_todoist_task(normalised, zoho_task_id="Z1", todoist_api=mock_api, description=desc)
+
+    assert result == "T888"
+    call_kwargs = mock_api.add_task.call_args.kwargs
+    assert call_kwargs["description"] == desc
+
+
+@pytest.mark.asyncio
+async def test_create_todoist_task_no_description_omits_kwarg(complete_env):
+    """DESC-5 (create path): when description=None (default), description kwarg absent from add_task."""
+    mock_api = AsyncMock()
+    mock_task = MagicMock()
+    mock_task.id = "T777"
+    mock_api.add_task = AsyncMock(return_value=mock_task)
+
+    normalised = NormalisedTask(title="Plain task", due_date=None, priority=1, is_completed=False)
+    await create_todoist_task(normalised, zoho_task_id="Z2", todoist_api=mock_api)
+
+    call_kwargs = mock_api.add_task.call_args.kwargs
+    assert "description" not in call_kwargs
