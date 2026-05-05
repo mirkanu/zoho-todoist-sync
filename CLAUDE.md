@@ -27,14 +27,14 @@ Migrated from Railway to Hetzner VPS on 2026-04-25.
 - **Zoho org region**: EU (`crm.zoho.eu`, `www.zohoapis.eu`, `accounts.zoho.eu`)
 - **Todoist project ID**: `6gCPcWwM392GhXQh` ("Zoho (synced!) Make.com")
 - **Zoho custom field**: `Todoist Task ID` — already exists, already populated by Make.com. Exact `api_name` must be fetched from Zoho settings at startup (likely `Todoist_Task_ID` but verify).
-- **ID linkage in Todoist**: Footer in task description: `\n\n---\n[zoho:{ZOHO_TASK_ID}]`
+- **ID linkage**: Bidirectional via `sync_state` DB table (zoho_task_id ↔ todoist_task_id) + Zoho custom field `Todoist_Task_ID`. No description footer — that approach was decided against and never implemented.
 - **Loop prevention**: Canonical hash of `{title, due_date (date-only), priority (Todoist int 1–4), is_completed}`. Echo = incoming hash matches stored hash → skip.
 
 ## Critical Constraints
 
 - **Priority mapping is NOT inverted**: Zoho Highest→Todoist 4 (p1/urgent), not 1. Highest→4, High→3, Normal→2, Low/unset→1.
 - **Due date always date-only**: Always normalise to `YYYY-MM-DD`. Never pass `due_datetime` to Todoist.
-- **Description sync is OUT of v1**: Todoist description used only for `[zoho:ID]` footer.
+- **Description sync is OUT of v1**: Todoist description not written (v1.1 will add Zoho link + deal context).
 - **Zoho webhook is notification-only**: Payload contains `module` + `ids` only. Worker MUST fetch full task from API on dequeue.
 - **Migration is NOT a fresh seed**: Existing Todoist tasks (from Make.com) must be linked by ID via `Todoist_Task_ID` Zoho field. Run E2E test before migration.
 
