@@ -22,7 +22,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.models import SyncState
 from app.todoist.description import ZOHO_TASK_BASE_URL, build_task_description, _extract_related_to_name
-from app.zoho.client import ZohoClient, ZohoNotFoundError
+from app.zoho.client import ZohoClient, ZohoNotFoundError, ZohoRateLimitError
 from app.zoho.state import token_state
 from app.zoho.token_manager import (
     KV_ACCESS_TOKEN_KEY,
@@ -58,7 +58,12 @@ async def backfill_one(
     # 2. Fetch Zoho task for related_to context
     try:
         body = await zoho_client.get_task(zoho_task_id)
-        zoho_record = body["data"][0]
+        data = body.get("data", [])
+        if not data:
+            log.warning("backfill_zoho_empty_data", zoho_id=zoho_task_id, todoist_id=todoist_task_id)
+            counters["not_found"] += 1
+            return
+        zoho_record = data[0]
     except ZohoNotFoundError:
         log.warning("backfill_zoho_not_found", zoho_id=zoho_task_id, todoist_id=todoist_task_id)
         counters["not_found"] += 1
@@ -93,10 +98,14 @@ async def run_backfill(
     for row in rows:
         try:
             await backfill_one(row.zoho_task_id, row.todoist_task_id, zoho_client, todoist_api, dry_run, counters)
+        except ZohoRateLimitError:
+            log.warning("backfill_zoho_rate_limited", zoho_id=row.zoho_task_id)
+            await asyncio.sleep(10)
+            counters["errors"] += 1
         except Exception as exc:
             log.error("backfill_error", zoho_id=row.zoho_task_id, error=str(exc), exc_info=True)
             counters["errors"] += 1
-        await asyncio.sleep(0.2)  # avoid Todoist 429
+        await asyncio.sleep(0.5)  # ~2 req/sec — safe for both Zoho EU and Todoist
 
     prefix = "DRY-RUN" if dry_run else "BACKFILL"
     print(
@@ -114,38 +123,39 @@ async def main(dry_run: bool) -> int:
 
     engine = create_async_engine(settings.database_url, pool_pre_ping=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    # Token bootstrap (mirrors migrate.py)
-    async with session_factory() as session:
-        stored_token, stored_expires_at = await load_token_from_kv(session)
-    now_utc = datetime.now(timezone.utc)
-    needs_refresh = (
-        not stored_token
-        or stored_expires_at is None
-        or stored_expires_at <= now_utc
-    )
-    if needs_refresh:
-        access_token, expires_at = await refresh_access_token(settings)
-        async with session_factory() as session:
-            await upsert_kv(session, KV_ACCESS_TOKEN_KEY, access_token)
-            await upsert_kv(session, KV_EXPIRES_AT_KEY, expires_at.isoformat())
-            await session.commit()
-    else:
-        access_token = stored_token
-        expires_at = stored_expires_at
-
-    token_state["access_token"] = access_token
-    token_state["expires_at"] = expires_at
-
-    zoho_client = ZohoClient(access_token=access_token)
-    todoist_api = TodoistAPIAsync(token=settings.todoist_api_token)
-
+    todoist_api = None
     try:
-        await run_backfill(session_factory, zoho_client, todoist_api, dry_run)
+        # Token bootstrap (mirrors migrate.py)
+        async with session_factory() as session:
+            stored_token, stored_expires_at = await load_token_from_kv(session)
+        now_utc = datetime.now(timezone.utc)
+        needs_refresh = (
+            not stored_token
+            or stored_expires_at is None
+            or stored_expires_at <= now_utc
+        )
+        if needs_refresh:
+            access_token, expires_at = await refresh_access_token(settings)
+            async with session_factory() as session:
+                await upsert_kv(session, KV_ACCESS_TOKEN_KEY, access_token)
+                await upsert_kv(session, KV_EXPIRES_AT_KEY, expires_at.isoformat())
+                await session.commit()
+        else:
+            access_token = stored_token
+            expires_at = stored_expires_at
+
+        token_state["access_token"] = access_token
+        token_state["expires_at"] = expires_at
+
+        zoho_client = ZohoClient(access_token=access_token)
+        todoist_api = TodoistAPIAsync(token=settings.todoist_api_token)
+
+        counters = await run_backfill(session_factory, zoho_client, todoist_api, dry_run)
     finally:
-        await todoist_api.close()
+        if todoist_api is not None:
+            await todoist_api.close()
         await engine.dispose()
-    return 0
+    return 1 if counters["errors"] > 0 else 0
 
 
 if __name__ == "__main__":
