@@ -85,7 +85,10 @@ async def test_sync_task_lock_released_in_finally(complete_env):
     factory, sess = _mock_session_factory_with_state(None)
     ctx["session_factory"] = factory
 
-    with pytest.raises(Retry):
+    with (
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+        pytest.raises(Retry),
+    ):
         await sync_task(ctx, "Z1")
 
     ctx["redis"].delete.assert_called_once_with("lock:sync:Z1")
@@ -111,15 +114,17 @@ async def test_echo_suppressed_when_all_hashes_match(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={"title": "task A"})
-    ctx["todoist_client"].get_task = AsyncMock(return_value=norm)
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm),
         patch("app.worker.jobs.update_todoist_task") as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task") as mock_update_zoho,
         patch("app.worker.jobs.create_todoist_task") as mock_create,
         patch("app.worker.jobs.complete_todoist_task") as mock_complete_tod,
         patch("app.worker.jobs.complete_zoho_task") as mock_complete_zoho,
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
@@ -160,10 +165,11 @@ async def test_select_for_update_is_called(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].get_task = AsyncMock(return_value=norm_b)
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_a),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_b),
         patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock),
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock),
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
@@ -219,7 +225,13 @@ async def test_new_task_creates_todoist_and_writes_id_back(complete_env):
     ):
         await sync_task(ctx, "Z1")
 
-    mock_create.assert_called_once_with(norm, "Z1", mock_todoist_api)
+    mock_create.assert_called_once()
+    call_args = mock_create.call_args
+    assert call_args.args[0] == norm
+    assert call_args.args[1] == "Z1"
+    assert call_args.args[2] == mock_todoist_api
+    assert "description" in call_args.kwargs
+
     mock_write_back.assert_called_once_with("Z1", "T999", "tok")
 
     # A SyncState and SyncEvent should have been added to the session
@@ -255,13 +267,15 @@ async def test_bootstrap_race_footer_suppressed(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].get_task = AsyncMock(return_value=norm)
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm),
         patch("app.worker.jobs.update_todoist_task") as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task") as mock_update_zoho,
         patch("app.worker.jobs.write_todoist_id_to_zoho") as mock_write_back,
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
@@ -302,13 +316,14 @@ async def test_lww_zoho_wins_when_both_diverge(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].get_task = AsyncMock(return_value=norm_todoist)
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
 
     mock_todoist_api = MagicMock()
     ctx["todoist_client"]._api = mock_todoist_api
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_zoho),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_todoist),
         patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
@@ -353,13 +368,14 @@ async def test_zoho_hash_differs_writes_to_todoist(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].get_task = AsyncMock(return_value=norm_old)  # same as last_hash
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
 
     mock_todoist_api = MagicMock()
     ctx["todoist_client"]._api = mock_todoist_api
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_new),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_old),
         patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
@@ -399,10 +415,11 @@ async def test_todoist_hash_differs_writes_to_zoho(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].get_task = AsyncMock(return_value=norm_new_todoist)
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_old),  # same as last_hash
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_new_todoist),
         patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
@@ -434,7 +451,10 @@ async def test_retry_on_zoho_rate_limit_uses_correct_delay(complete_env):
         factory, _ = _mock_session_factory_with_state(None)
         ctx["session_factory"] = factory
 
-        with pytest.raises(Retry) as exc_info:
+        with (
+            patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+            pytest.raises(Retry) as exc_info,
+        ):
             await sync_task(ctx, f"Z{job_try}")
 
         # arq Retry stores defer_score in milliseconds (seconds * 1000)
@@ -468,13 +488,14 @@ async def test_completion_routes_to_complete_not_update(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].get_task = AsyncMock(return_value=norm_old)
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
 
     mock_todoist_api = MagicMock()
     ctx["todoist_client"]._api = mock_todoist_api
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_completed),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_old),
         patch("app.worker.jobs.complete_todoist_task", new_callable=AsyncMock) as mock_complete,
         patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
