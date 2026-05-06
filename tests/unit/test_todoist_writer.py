@@ -232,7 +232,7 @@ async def test_create_todoist_task_with_description(complete_env):
     mock_api.add_task = AsyncMock(return_value=mock_task)
 
     normalised = NormalisedTask(title="Rich task", due_date=None, priority=2, is_completed=False)
-    desc = "Re: Acme Deal\nhttps://crm.zoho.eu/crm/org20100156718/tab/Tasks/Z1\nNot synced back to Zoho."
+    desc = "[Acme Deal](https://crm.zoho.eu/crm/org20100156718/tab/Tasks/Z1)\n[Todoist descriptions are not synced back to Zoho]"
     result = await create_todoist_task(normalised, zoho_task_id="Z1", todoist_api=mock_api, description=desc)
 
     assert result == "T888"

@@ -3,20 +3,20 @@ from app.todoist.description import build_task_description, _extract_related_to_
 
 
 def test_description_with_related_to():
-    """DESC-1+2+3: includes Re: line, Zoho URL, and not-synced note."""
+    """DESC-1+2+3: related name is hyperlinked to Zoho task URL, note present."""
     result = build_task_description("Z123", "Acme Deal")
-    assert result.startswith("Re: Acme Deal\n")
+    assert result.startswith("[Acme Deal](")
     assert "crm.zoho.eu" in result
     assert "/tab/Tasks/Z123" in result
-    assert "Not synced back to Zoho." in result
+    assert "[Todoist descriptions are not synced back to Zoho]" in result
 
 
 def test_description_no_related_to():
-    """DESC-4: no Re: line when related_to_name is None."""
+    """DESC-4: 'Open in Zoho' link when related_to_name is None."""
     result = build_task_description("Z456", None)
-    assert not result.startswith("Re:")
+    assert result.startswith("[Open in Zoho](")
     assert "/tab/Tasks/Z456" in result
-    assert "Not synced back to Zoho." in result
+    assert "[Todoist descriptions are not synced back to Zoho]" in result
 
 
 def test_description_includes_zoho_url():
@@ -28,7 +28,7 @@ def test_description_includes_zoho_url():
 def test_description_includes_not_synced_note():
     """DESC-3: note is always present."""
     result = build_task_description("Z000", "Some name")
-    assert "Not synced back to Zoho." in result
+    assert "[Todoist descriptions are not synced back to Zoho]" in result
 
 
 def test_extract_related_to_name_from_dict():
