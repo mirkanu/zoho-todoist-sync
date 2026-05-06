@@ -7,7 +7,6 @@ import pytest
 
 from app.todoist.description import ZOHO_TASK_BASE_URL
 from app.zoho.client import ZohoNotFoundError
-from scripts.backfill_descriptions import backfill_one
 
 
 # ---------------------------------------------------------------------------
@@ -15,8 +14,10 @@ from scripts.backfill_descriptions import backfill_one
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_backfill_skips_task_with_existing_zoho_link():
+async def test_backfill_skips_task_with_existing_zoho_link(complete_env):
     """Idempotency: task whose description already contains Zoho link is skipped."""
+    from scripts.backfill_descriptions import backfill_one
+
     todoist_task = MagicMock()
     todoist_task.description = f"{ZOHO_TASK_BASE_URL}/Z111 — some text"
 
@@ -37,8 +38,10 @@ async def test_backfill_skips_task_with_existing_zoho_link():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_backfill_updates_task_without_description():
+async def test_backfill_updates_task_without_description(complete_env):
     """Task with no description is fetched from Zoho and description written to Todoist."""
+    from scripts.backfill_descriptions import backfill_one
+
     todoist_task = MagicMock()
     todoist_task.description = None
 
@@ -69,8 +72,10 @@ async def test_backfill_updates_task_without_description():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_backfill_handles_zoho_not_found():
+async def test_backfill_handles_zoho_not_found(complete_env):
     """Task missing from Zoho API is logged and skipped — loop continues."""
+    from scripts.backfill_descriptions import backfill_one
+
     todoist_task = MagicMock()
     todoist_task.description = None
 
@@ -93,8 +98,10 @@ async def test_backfill_handles_zoho_not_found():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_backfill_dry_run_does_not_write():
+async def test_backfill_dry_run_does_not_write(complete_env):
     """Dry-run mode: description is built but update_task is NOT called; counter incremented."""
+    from scripts.backfill_descriptions import backfill_one
+
     todoist_task = MagicMock()
     todoist_task.description = None
 
