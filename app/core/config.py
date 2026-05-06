@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     todoist_project_id: str
     todoist_client_secret: str
     resend_api_key: str
+    resend_sender_email: str = "sync-alerts@resend.dev"
     database_url: str
     redis_url: str
     log_level: str = "INFO"
