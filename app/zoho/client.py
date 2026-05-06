@@ -43,8 +43,8 @@ class ZohoClient:
         """Map Zoho non-2xx responses to typed exceptions. Returns parsed JSON on 2xx."""
         if resp.status_code == 401:
             raise ZohoAuthError(f"401 Unauthorized — {context}")
-        if resp.status_code == 404:
-            raise ZohoNotFoundError(f"404 Not Found — {context}")
+        if resp.status_code in (204, 404):
+            raise ZohoNotFoundError(f"{resp.status_code} Not Found — {context}")
         if resp.status_code == 429:
             raise ZohoRateLimitError(f"429 Rate limit — {context}")
         if not (200 <= resp.status_code < 300):
