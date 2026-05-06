@@ -504,3 +504,111 @@ async def test_completion_routes_to_complete_not_update(complete_env):
 
     mock_complete.assert_called_once()
     mock_update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# OBS-2: SyncEvent.source assertions per trigger origin (Tests 12, 13, 14)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_source_zoho_webhook_recorded_on_new_task(complete_env):
+    """OBS-2: SyncEvent.source == 'zoho_webhook' when sync_task called with source='zoho_webhook'."""
+    from app.worker.jobs import sync_task
+    from app.db.models import SyncEvent
+
+    norm = _norm(title="New Task From Zoho")
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx = _make_ctx()
+    ctx["session_factory"] = factory
+    ctx["zoho_client"].get_task = AsyncMock(return_value={})
+
+    mock_todoist_api = MagicMock()
+    ctx["todoist_client"]._api = mock_todoist_api
+
+    with (
+        patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
+        patch("app.worker.jobs.create_todoist_task", new_callable=AsyncMock, return_value="T998"),
+        patch("app.worker.jobs.write_todoist_id_to_zoho", new_callable=AsyncMock),
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+    ):
+        await sync_task(ctx, "Z1", source="zoho_webhook")
+
+    added_events = [
+        c.args[0] for c in sess.add.call_args_list
+        if isinstance(c.args[0], SyncEvent)
+    ]
+    assert len(added_events) >= 1
+    assert all(e.source == "zoho_webhook" for e in added_events)
+
+
+@pytest.mark.asyncio
+async def test_source_todoist_webhook_recorded_on_divergent_write(complete_env):
+    """OBS-2: SyncEvent.source == 'todoist_webhook' when sync_task called with source='todoist_webhook'."""
+    from app.worker.jobs import sync_task
+    from app.db.models import SyncEvent
+
+    norm_old = _norm(title="old")
+    norm_new = _norm(title="new from todoist webhook")
+    old_hash = canonical_hash(norm_old)
+
+    state = MagicMock()
+    state.todoist_task_id = "T556"
+    state.last_hash = old_hash
+
+    factory, sess = _mock_session_factory_with_state(state)
+    ctx = _make_ctx()
+    ctx["session_factory"] = factory
+    ctx["zoho_client"].get_task = AsyncMock(return_value={})
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
+
+    mock_todoist_api = MagicMock()
+    ctx["todoist_client"]._api = mock_todoist_api
+
+    with (
+        patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_new),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_old),
+        patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock),
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+    ):
+        await sync_task(ctx, "Z1", source="todoist_webhook")
+
+    added_events = [
+        c.args[0] for c in sess.add.call_args_list
+        if isinstance(c.args[0], SyncEvent)
+    ]
+    assert len(added_events) >= 1
+    assert all(e.source == "todoist_webhook" for e in added_events)
+
+
+@pytest.mark.asyncio
+async def test_source_reconciler_recorded_on_echo_suppressed(complete_env):
+    """OBS-2: SyncEvent.source == 'reconciler' when sync_task called with source='reconciler' on echo path."""
+    from app.worker.jobs import sync_task
+    from app.db.models import SyncEvent
+
+    norm = _norm(title="reconciled task", prio=2)
+    h = canonical_hash(norm)
+
+    state = MagicMock()
+    state.todoist_task_id = "T334"
+    state.last_hash = h  # both sides match → echo_suppressed
+
+    factory, sess = _mock_session_factory_with_state(state)
+    ctx = _make_ctx()
+    ctx["session_factory"] = factory
+    ctx["zoho_client"].get_task = AsyncMock(return_value={})
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
+
+    with (
+        patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
+        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm),
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+    ):
+        await sync_task(ctx, "Z1", source="reconciler")
+
+    added_events = [
+        c.args[0] for c in sess.add.call_args_list
+        if isinstance(c.args[0], SyncEvent)
+    ]
+    assert len(added_events) >= 1
+    assert all(e.source == "reconciler" for e in added_events)
