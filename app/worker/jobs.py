@@ -48,7 +48,7 @@ from app.zoho.client import (
     ZohoRateLimitError,
 )
 from app.zoho.normalise import zoho_record_to_normalised
-from app.zoho.state import token_state
+from app.zoho.state import token_state, zoho_field_cache
 from app.zoho.writer import (
     complete_zoho_task,
     update_zoho_task,
@@ -242,14 +242,57 @@ async def _apply_write(
 
 async def _handle_new_task(
     zoho_task_id: str,
-    zoho_record: dict,              # NEW — raw record for What_Id extraction (DESC-1)
+    zoho_record: dict,              # raw record for What_Id extraction (DESC-1)
     zoho_norm: NormalisedTask,
     todoist_client: Any,
     session_factory: Any,
     source: str = "worker",
 ) -> None:
-    """No sync_state row -> this is a new Zoho task. Create in Todoist + link + log."""
+    """No sync_state row — check Zoho Todoist_Task_ID field first (idempotency guard),
+    then create a new task if none exists. Prevents duplicates when a previous run
+    created the Todoist task but crashed before persisting sync_state.
+    """
     from app.todoist.description import build_task_description, _extract_related_to_name
+
+    # Guard: if Zoho already records a Todoist task ID, try to link it rather
+    # than blindly creating another. This handles crash-between-create-and-persist.
+    field_api_name = zoho_field_cache.get("todoist_task_id_api_name") or "Todoist_Task_ID"
+    existing_todoist_id = zoho_record.get(field_api_name)
+    if existing_todoist_id:
+        try:
+            await todoist_client.fetch_todoist_task(existing_todoist_id)
+            # Task still exists — link it without creating a duplicate.
+            new_hash = canonical_hash(zoho_norm)
+            now = datetime.now(timezone.utc)
+            async with session_factory() as session:
+                async with session.begin():
+                    session.add(SyncState(
+                        zoho_task_id=zoho_task_id,
+                        todoist_task_id=existing_todoist_id,
+                        last_hash=new_hash,
+                        last_synced_at=now,
+                        orphan_check_count=0,
+                    ))
+                    session.add(SyncEvent(
+                        zoho_task_id=zoho_task_id,
+                        action="sync",
+                        source=source,
+                        detail={"direction": "zoho_to_todoist", "linked": True},
+                    ))
+            log.info(
+                "sync_task_existing_link",
+                zoho_task_id=zoho_task_id,
+                todoist_id=existing_todoist_id,
+            )
+            return
+        except TodoistNotFoundError:
+            # Todoist task was deleted; fall through to create a new one.
+            log.warning(
+                "sync_task_existing_link_not_found",
+                zoho_task_id=zoho_task_id,
+                todoist_id=existing_todoist_id,
+            )
+
     related_to_name = _extract_related_to_name(zoho_record)
     description = build_task_description(zoho_task_id, related_to_name)
     todoist_id = await create_todoist_task(
