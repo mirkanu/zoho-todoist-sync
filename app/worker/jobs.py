@@ -298,7 +298,9 @@ async def _handle_new_task(
     todoist_id = await create_todoist_task(
         zoho_norm, zoho_task_id, todoist_client._api, description=description
     )
-    await write_todoist_id_to_zoho(zoho_task_id, todoist_id, token_state["access_token"])
+    # Persist sync_state BEFORE writing back to Zoho. This means a Zoho write failure
+    # causes a retry that takes the update path (sync_state found) rather than creating
+    # a duplicate Todoist task. Zoho field write is best-effort / recovery metadata only.
     new_hash = canonical_hash(zoho_norm)
     now = datetime.now(timezone.utc)
     async with session_factory() as session:
@@ -321,3 +323,12 @@ async def _handle_new_task(
         zoho_task_id=zoho_task_id,
         todoist_id=todoist_id,
     )
+    try:
+        await write_todoist_id_to_zoho(zoho_task_id, todoist_id, token_state["access_token"])
+    except Exception as exc:
+        log.warning(
+            "zoho_todoist_id_write_failed_non_fatal",
+            zoho_task_id=zoho_task_id,
+            todoist_id=todoist_id,
+            error=str(exc),
+        )

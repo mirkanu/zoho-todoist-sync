@@ -69,7 +69,14 @@ async def daily_summary(ctx: dict) -> None:
         description=description,
         project_id=settings.todoist_project_id,
     )
-    await todoist_client._api.complete_task(task.id)
+    try:
+        await todoist_client._api.complete_task(task.id)
+    except Exception as exc:
+        log.warning("daily_summary_close_failed", todoist_task_id=task.id, error=str(exc))
+        try:
+            await todoist_client._api.delete_task(task.id)
+        except Exception:
+            pass  # Leave it open rather than crashing — it's informational only
 
     log.info(
         "daily_summary_complete",
