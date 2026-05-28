@@ -724,6 +724,100 @@ async def test_orphan_todoist_rate_limit_skipped(complete_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 18: orphan_sweep healthy path — Zoho hash drifted → enqueue_sync called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_drift_enqueues_sync(complete_env, monkeypatch):
+    """Healthy path: both sides exist but Zoho hash differs from state.last_hash
+    → enqueue_sync called with source='orphan_drift'."""
+    from app.worker.reconciler import orphan_sweep
+    from app.core.hash import canonical_hash
+    from app.core.normalise import NormalisedTask
+
+    state = _make_state(orphan_check_count=0)
+    state.last_hash = "stale_hash_not_matching"
+
+    factory, sess = _mock_session_factory_with_rows([state])
+    ctx = _make_reconciler_ctx()
+    ctx["session_factory"] = factory
+
+    # Zoho returns a healthy record (owner matches settings.zoho_user_id = "test-user-id")
+    ctx["zoho_client"].get_task = AsyncMock(
+        return_value={"data": [{
+            "id": "Z1",
+            "Subject": "Drifted Task",
+            "Due_Date": "2026-06-01",
+            "Priority": "High",
+            "Status": "Not Started",
+            "Owner": {"id": "test-user-id"},
+        }]}
+    )
+    # Todoist is healthy
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+        return_value=_healthy_todoist_task("Z1")
+    )
+
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    mock_delete_todoist, mock_delete_zoho, _, mock_upsert = _common_orphan_patches(monkeypatch)
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+
+    await orphan_sweep(ctx)
+
+    mock_enqueue.assert_called_once()
+    call = mock_enqueue.call_args
+    assert call.args[1] == state.zoho_task_id
+    assert call.kwargs.get("source") == "orphan_drift"
+    assert call.kwargs.get("defer_secs") == 0
+    # Nothing should be deleted
+    mock_delete_todoist.assert_not_called()
+    mock_delete_zoho.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_healthy_no_drift_no_enqueue(complete_env, monkeypatch):
+    """Healthy path: both sides exist and Zoho hash matches state.last_hash
+    → enqueue_sync NOT called."""
+    from app.worker.reconciler import orphan_sweep
+    from app.core.hash import canonical_hash
+    from app.zoho.normalise import zoho_record_to_normalised
+    from app.core.config import get_settings
+
+    # Build a Zoho record and compute its canonical hash so state.last_hash matches
+    zoho_data = {
+        "id": "Z1",
+        "Subject": "Stable Task",
+        "Due_Date": "2026-06-01",
+        "Priority": "High",
+        "Status": "Not Started",
+        "Owner": {"id": "test-user-id"},
+    }
+    settings = get_settings()
+    norm = zoho_record_to_normalised(zoho_data, settings.zoho_terminal_statuses_list)
+    matching_hash = canonical_hash(norm)
+
+    state = _make_state(orphan_check_count=0)
+    state.last_hash = matching_hash
+
+    factory, sess = _mock_session_factory_with_rows([state])
+    ctx = _make_reconciler_ctx()
+    ctx["session_factory"] = factory
+
+    ctx["zoho_client"].get_task = AsyncMock(return_value={"data": [zoho_data]})
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+        return_value=_healthy_todoist_task("Z1")
+    )
+
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    mock_delete_todoist, mock_delete_zoho, _, mock_upsert = _common_orphan_patches(monkeypatch)
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+
+    await orphan_sweep(ctx)
+
+    mock_enqueue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Test 19: orphan_sweep_last_run upserted with ISO timestamp at end of sweep
 # ---------------------------------------------------------------------------
 

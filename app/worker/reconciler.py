@@ -231,6 +231,24 @@ async def orphan_sweep(ctx: dict) -> None:
                         locked = await sess.get(SyncState, state.zoho_task_id)
                         if locked is not None:
                             locked.orphan_check_count = 0
+
+            # Drift detection: if Zoho hash has diverged from last_hash, re-enqueue sync.
+            # `data` is in scope from the Zoho fetch try-block above.
+            zoho_norm = zoho_record_to_normalised(data, settings.zoho_terminal_statuses_list)
+            zoho_hash = canonical_hash(zoho_norm)
+            if zoho_hash != state.last_hash:
+                log.warning(
+                    "orphan_sweep_drift_detected",
+                    zoho_task_id=state.zoho_task_id,
+                    stored_hash_prefix=state.last_hash[:8] if state.last_hash else "None",
+                    current_hash_prefix=zoho_hash[:8],
+                )
+                await enqueue_sync(
+                    ctx["redis"],
+                    state.zoho_task_id,
+                    defer_secs=0,
+                    source="orphan_drift",
+                )
             continue
 
         # ------------------------------------------------------------------
