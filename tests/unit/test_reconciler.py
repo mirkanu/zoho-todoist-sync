@@ -65,6 +65,7 @@ async def test_reconcile_zoho_mismatch(complete_env, monkeypatch):
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=([], "new-token"))
 
     mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -116,6 +117,7 @@ async def test_reconcile_zoho_match_no_enqueue(complete_env, monkeypatch):
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=([], "new-token"))
 
     mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -155,6 +157,7 @@ async def test_reconcile_zoho_no_state_row_enqueues(complete_env, monkeypatch):
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=([], "new-token"))
 
     mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -205,6 +208,7 @@ async def test_reconcile_todoist_delta(complete_env, monkeypatch):
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
     mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -245,6 +249,7 @@ async def test_reconcile_todoist_delta_not_in_sync_state_skipped(complete_env, m
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
     mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -276,6 +281,7 @@ async def test_reconcile_todoist_delta_is_deleted_skipped(complete_env, monkeypa
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=(items, "new-token"))
 
     mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -304,6 +310,7 @@ async def test_sync_token_saved(complete_env, monkeypatch):
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=([], "saved-token-abc"))
 
     mock_save = AsyncMock()
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", AsyncMock(return_value=MagicMock()))
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -333,6 +340,7 @@ async def test_reconciler_last_run_updated(complete_env, monkeypatch):
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=([], "tok"))
 
     mock_upsert = AsyncMock()
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", mock_upsert)
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", AsyncMock(return_value=MagicMock()))
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -382,6 +390,7 @@ async def test_reconcile_dedup(complete_env, monkeypatch):
 
     # Simulate dedup: enqueue_sync returns None (deduplicated)
     mock_enqueue = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))
@@ -412,6 +421,7 @@ async def test_reconcile_zoho_api_error_surfaces(complete_env, monkeypatch):
     )
     ctx["todoist_client"].fetch_sync_delta = AsyncMock(return_value=([], "tok"))
 
+    monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
     monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
     monkeypatch.setattr("app.worker.reconciler.enqueue_sync", AsyncMock(return_value=MagicMock()))
     monkeypatch.setattr("app.worker.reconciler.load_sync_token", AsyncMock(return_value="*"))

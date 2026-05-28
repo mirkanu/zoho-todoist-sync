@@ -104,12 +104,15 @@ async def test_on_startup_populates_ctx(complete_env):
     async def fake_refresh_loop_coro(ts, sf):
         pass
 
+    fake_zoho_client = MagicMock()
+    fake_zoho_client.get_fields_metadata = AsyncMock(return_value={"todoist_task_id_api_name": "Todoist_Task_ID"})
+
     with patch("app.worker.settings.create_async_engine", return_value=fake_engine), \
          patch("app.worker.settings.async_sessionmaker", return_value=fake_session_factory), \
          patch("app.worker.settings.load_token_from_kv", new_callable=AsyncMock, return_value=(None, None)), \
          patch("app.worker.settings.refresh_access_token", new_callable=AsyncMock, return_value=("new_tok", future_dt)), \
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
-         patch("app.worker.settings.ZohoClient", return_value=AsyncMock()), \
+         patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client), \
          patch("app.worker.settings.TodoistClient"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", return_value=fake_refresh_loop_coro(None, None)), \
@@ -154,12 +157,15 @@ async def test_on_startup_launches_proactive_refresh_loop(complete_env):
     sentinel_coro = fake_refresh_loop(None, None)
     mock_loop = MagicMock(return_value=sentinel_coro)
 
+    fake_zoho_client2 = MagicMock()
+    fake_zoho_client2.get_fields_metadata = AsyncMock(return_value={"todoist_task_id_api_name": "Todoist_Task_ID"})
+
     with patch("app.worker.settings.create_async_engine", return_value=fake_engine), \
          patch("app.worker.settings.async_sessionmaker", return_value=fake_session_factory), \
          patch("app.worker.settings.load_token_from_kv", new_callable=AsyncMock, return_value=(None, None)), \
          patch("app.worker.settings.refresh_access_token", new_callable=AsyncMock, return_value=("new_tok", future_dt)), \
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
-         patch("app.worker.settings.ZohoClient", return_value=AsyncMock()), \
+         patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client2), \
          patch("app.worker.settings.TodoistClient"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", mock_loop), \
@@ -350,6 +356,9 @@ def test_cron_jobs_registered(complete_env):
     assert daily.hour in ({0}, 0)
     assert daily.minute in ({0}, 0)
     assert daily.second in (0, {0})
+    # renew_zoho_webhook: every hour at :00 and :45
+    assert renew.minute in ({0, 45}, frozenset({0, 45}))
+    assert renew.second in (0, {0})
     # timeout is stored as timeout_s (in seconds)
     assert reconcile.timeout_s is not None
     assert orphan.timeout_s is not None
