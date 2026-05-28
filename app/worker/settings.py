@@ -20,7 +20,7 @@ runs, or call `importlib.reload(app.worker.settings)` after cache_clear().
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import resend
 from arq import cron, func
@@ -62,10 +62,14 @@ async def on_startup(ctx: dict) -> None:
         stored_token, stored_expires_at = await load_token_from_kv(session)
 
     now_utc = datetime.now(timezone.utc)
+    # Refresh if token is missing, unknown expiry, already expired, OR within 5
+    # minutes of expiry.  Without this buffer, a restart at the exact moment the
+    # token is about to expire would pass the check, then fail every API call
+    # until the proactive_refresh_loop fires 50 minutes later.
     needs_refresh = (
         not stored_token
         or stored_expires_at is None
-        or stored_expires_at <= now_utc
+        or stored_expires_at <= now_utc + timedelta(minutes=5)
     )
     if needs_refresh:
         access_token, expires_at = await refresh_access_token(settings)
