@@ -580,6 +580,105 @@ async def test_source_todoist_webhook_recorded_on_divergent_write(complete_env):
     assert all(e.source == "todoist_webhook" for e in added_events)
 
 
+# ---------------------------------------------------------------------------
+# Test 15: Final transient attempt (job_try=4) → SyncEvent(action="failed") written, Retry still raised
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sync_task_failure_event_on_final_transient_attempt(complete_env):
+    """job_try=4 + ZohoAPIError → SyncEvent(action='failed') added, Retry still raised."""
+    from app.worker.jobs import sync_task
+    from app.db.models import SyncEvent
+
+    ctx = _make_ctx(lock_acquired=True, job_try=4)
+    ctx["zoho_client"].get_task = AsyncMock(side_effect=ZohoAPIError("server error"))
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    with (
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+        pytest.raises(Retry),
+    ):
+        await sync_task(ctx, "Z1")
+
+    added = [c.args[0] for c in sess.add.call_args_list if hasattr(c.args[0], "action")]
+    failed_events = [e for e in added if e.action == "failed"]
+    assert len(failed_events) >= 1, "Expected SyncEvent(action='failed') to be added"
+    assert failed_events[0].source == "worker"
+    assert "error" in failed_events[0].detail
+    assert failed_events[0].detail["attempt"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Test 16: ZohoNotFoundError → SyncEvent(action="failed") written, no Retry
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sync_task_failure_event_on_zoho_not_found(complete_env):
+    """ZohoNotFoundError → SyncEvent(action='failed') added, no Retry raised (returns None)."""
+    from app.worker.jobs import sync_task
+    from app.db.models import SyncEvent
+
+    ctx = _make_ctx(lock_acquired=True, job_try=1)
+    ctx["zoho_client"].get_task = AsyncMock(side_effect=ZohoNotFoundError("not found"))
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    with patch("app.worker.jobs.token_state", {"access_token": "tok"}):
+        result = await sync_task(ctx, "Z1")
+
+    assert result is None  # no Retry raised
+
+    added = [c.args[0] for c in sess.add.call_args_list if hasattr(c.args[0], "action")]
+    failed_events = [e for e in added if e.action == "failed"]
+    assert len(failed_events) >= 1, "Expected SyncEvent(action='failed') to be added"
+    assert failed_events[0].source == "worker"
+    assert failed_events[0].detail["attempt"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 17: TodoistNotFoundError → SyncEvent(action="failed") written, no Retry
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sync_task_failure_event_on_todoist_not_found(complete_env):
+    """TodoistNotFoundError (from fetch_todoist_task) → SyncEvent(action='failed') added, no Retry."""
+    from app.worker.jobs import sync_task
+    from app.db.models import SyncEvent
+    from app.todoist.client import TodoistNotFoundError
+
+    norm = _norm(title="task")
+    old_hash = "old_hash_" + "x" * 56
+
+    state = MagicMock()
+    state.todoist_task_id = "T888"
+    state.last_hash = old_hash
+
+    factory, sess = _mock_session_factory_with_state(state)
+    ctx = _make_ctx(lock_acquired=True, job_try=1)
+    ctx["session_factory"] = factory
+    ctx["zoho_client"].get_task = AsyncMock(return_value={})
+    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+        side_effect=TodoistNotFoundError("todoist task gone")
+    )
+
+    with (
+        patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+    ):
+        result = await sync_task(ctx, "Z1")
+
+    assert result is None  # no Retry raised
+
+    added = [c.args[0] for c in sess.add.call_args_list if hasattr(c.args[0], "action")]
+    failed_events = [e for e in added if e.action == "failed"]
+    assert len(failed_events) >= 1, "Expected SyncEvent(action='failed') to be added"
+    assert failed_events[0].source == "worker"
+    assert failed_events[0].detail["attempt"] == 1
+
+
 @pytest.mark.asyncio
 async def test_source_reconciler_recorded_on_echo_suppressed(complete_env):
     """OBS-2: SyncEvent.source == 'reconciler' when sync_task called with source='reconciler' on echo path."""

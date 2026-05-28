@@ -62,6 +62,31 @@ log = get_logger(__name__)
 RETRY_DELAYS: dict[int, int] = {1: 5, 2: 15, 3: 60}
 
 
+async def _write_failure_event(
+    zoho_task_id: str,
+    session_factory: Any,
+    exc: Exception,
+    job_try: int,
+) -> None:
+    """Write a SyncEvent(action='failed') audit record. Swallows DB errors so it
+    never masks the original exception that triggered the failure."""
+    try:
+        async with session_factory() as sess:
+            async with sess.begin():
+                sess.add(SyncEvent(
+                    zoho_task_id=zoho_task_id,
+                    action="failed",
+                    source="worker",
+                    detail={"error": str(exc), "attempt": job_try},
+                ))
+    except Exception as write_exc:
+        log.error(
+            "sync_task_failure_event_write_failed",
+            zoho_task_id=zoho_task_id,
+            error=str(write_exc),
+        )
+
+
 async def sync_task(ctx: dict, zoho_task_id: str, source: str = "worker") -> None:
     """Full Zoho <-> Todoist sync pipeline for one task. arq job entry point.
 
@@ -114,12 +139,16 @@ async def sync_task(ctx: dict, zoho_task_id: str, source: str = "worker") -> Non
             delay=delay,
             error=str(exc),
         )
+        if job_try >= 4:
+            await _write_failure_event(zoho_task_id, session_factory, exc, job_try)
         raise Retry(defer=delay) from exc
-    except ZohoNotFoundError:
+    except ZohoNotFoundError as exc:
         # 404 on the Zoho side — orphan handling is Phase 7 territory.
         # For Phase 5, log and return (no retry).
+        await _write_failure_event(zoho_task_id, session_factory, exc, job_try)
         log.warning("sync_task_zoho_not_found", zoho_task_id=zoho_task_id)
-    except TodoistNotFoundError:
+    except TodoistNotFoundError as exc:
+        await _write_failure_event(zoho_task_id, session_factory, exc, job_try)
         log.warning("sync_task_todoist_not_found", zoho_task_id=zoho_task_id)
     finally:
         await redis.delete(lock_key)
