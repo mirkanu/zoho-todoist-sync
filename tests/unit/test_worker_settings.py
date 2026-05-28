@@ -104,12 +104,15 @@ async def test_on_startup_populates_ctx(complete_env):
     async def fake_refresh_loop_coro(ts, sf):
         pass
 
+    fake_zoho_client = MagicMock()
+    fake_zoho_client.get_fields_metadata = AsyncMock(return_value={"todoist_task_id_api_name": "Todoist_Task_ID"})
+
     with patch("app.worker.settings.create_async_engine", return_value=fake_engine), \
          patch("app.worker.settings.async_sessionmaker", return_value=fake_session_factory), \
          patch("app.worker.settings.load_token_from_kv", new_callable=AsyncMock, return_value=(None, None)), \
          patch("app.worker.settings.refresh_access_token", new_callable=AsyncMock, return_value=("new_tok", future_dt)), \
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
-         patch("app.worker.settings.ZohoClient"), \
+         patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client), \
          patch("app.worker.settings.TodoistClient"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", return_value=fake_refresh_loop_coro(None, None)), \
@@ -154,12 +157,15 @@ async def test_on_startup_launches_proactive_refresh_loop(complete_env):
     sentinel_coro = fake_refresh_loop(None, None)
     mock_loop = MagicMock(return_value=sentinel_coro)
 
+    fake_zoho_client2 = MagicMock()
+    fake_zoho_client2.get_fields_metadata = AsyncMock(return_value={"todoist_task_id_api_name": "Todoist_Task_ID"})
+
     with patch("app.worker.settings.create_async_engine", return_value=fake_engine), \
          patch("app.worker.settings.async_sessionmaker", return_value=fake_session_factory), \
          patch("app.worker.settings.load_token_from_kv", new_callable=AsyncMock, return_value=(None, None)), \
          patch("app.worker.settings.refresh_access_token", new_callable=AsyncMock, return_value=("new_tok", future_dt)), \
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
-         patch("app.worker.settings.ZohoClient"), \
+         patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client2), \
          patch("app.worker.settings.TodoistClient"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", mock_loop), \
@@ -261,6 +267,7 @@ async def test_enqueue_sync_dedups(complete_env):
     mock_redis.enqueue_job.assert_awaited_once_with(
         "sync_task",
         "Z1",
+        "worker",
         _job_id="sync:Z1",
         _defer_by=0,
     )
@@ -323,20 +330,22 @@ def test_main_module_calls_run_worker(complete_env):
 # ---------------------------------------------------------------------------
 
 def test_cron_jobs_registered(complete_env):
-    """WorkerSettings.cron_jobs has 3 entries: reconcile_sweep, orphan_sweep, daily_summary."""
+    """WorkerSettings.cron_jobs has 4 entries: reconcile_sweep, orphan_sweep, daily_summary, renew_zoho_webhook."""
     import importlib
     import app.worker.settings as ws_mod
     importlib.reload(ws_mod)
     cron_jobs = ws_mod.WorkerSettings.cron_jobs
-    assert len(cron_jobs) == 3
+    assert len(cron_jobs) == 4
     names = {cj.coroutine.__name__ for cj in cron_jobs}
     assert "reconcile_sweep" in names
     assert "orphan_sweep" in names
     assert "daily_summary" in names
+    assert "renew_zoho_webhook" in names
     by_name = {cj.coroutine.__name__: cj for cj in cron_jobs}
     reconcile = by_name["reconcile_sweep"]
     orphan = by_name["orphan_sweep"]
     daily = by_name["daily_summary"]
+    renew = by_name["renew_zoho_webhook"]
     # arq CronJob: minute is stored as a set, second as an int
     assert reconcile.minute == {0, 15, 30, 45}
     # second may be int 0 or set {0} depending on arq version — accept either
@@ -347,7 +356,11 @@ def test_cron_jobs_registered(complete_env):
     assert daily.hour in ({0}, 0)
     assert daily.minute in ({0}, 0)
     assert daily.second in (0, {0})
+    # renew_zoho_webhook: every hour at :00 and :45
+    assert renew.minute in ({0, 45}, frozenset({0, 45}))
+    assert renew.second in (0, {0})
     # timeout is stored as timeout_s (in seconds)
     assert reconcile.timeout_s is not None
     assert orphan.timeout_s is not None
     assert daily.timeout_s is not None
+    assert renew.timeout_s is not None
