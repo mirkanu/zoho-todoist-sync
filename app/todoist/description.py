@@ -1,7 +1,13 @@
 """Description builder for new Todoist tasks created from Zoho (DESC-1–4)."""
 
-ZOHO_TASK_BASE_URL = "https://crm.zoho.eu/crm/org20100156718/tab/Tasks"
+from app.core.config import get_settings
+
 NOT_SYNCED_NOTE = "[Todoist descriptions are not synced back to Zoho]"
+
+
+def _zoho_task_base_url() -> str:
+    s = get_settings()
+    return f"https://crm.zoho.eu/crm/{s.zoho_org_id}/tab/Tasks"
 
 
 def build_task_description(zoho_task_id: str, related_to_name: str | None) -> str:
@@ -10,7 +16,7 @@ def build_task_description(zoho_task_id: str, related_to_name: str | None) -> st
     Includes: markdown hyperlink (related name or 'Open in Zoho') and not-synced note.
     Called only at creation time — never on update path (DESC-5).
     """
-    url = f"{ZOHO_TASK_BASE_URL}/{zoho_task_id}"
+    url = f"{_zoho_task_base_url()}/{zoho_task_id}"
     link_text = related_to_name if related_to_name else "Open in Zoho"
     return f"[{link_text}]({url})\n{NOT_SYNCED_NOTE}"
 

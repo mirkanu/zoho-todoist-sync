@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     zoho_refresh_token: str
     zoho_user_id: str
     zoho_region: str = "eu"
+    zoho_org_id: str = ""
     zoho_todoist_task_id_field: str = ""
     zoho_terminal_statuses: str = "Completed"
     zoho_job_defer_secs: int = 2
