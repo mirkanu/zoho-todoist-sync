@@ -2,8 +2,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
-.planning/worktrees
-.planning/phase-cache
+.planning/
 *.swp
 *.swo
 .DS_Store
