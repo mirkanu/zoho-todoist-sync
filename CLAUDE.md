@@ -14,7 +14,7 @@ Migrated from Railway to Hetzner VPS on 2026-04-25.
 
 | | |
 |---|---|
-| **Host** | Hetzner VPS — `hetzner-vps` (37.27.212.18) |
+| **Host** | Hetzner VPS |
 | **Web container** | `zoho-sync-web`, port 3003 on host |
 | **Worker container** | `zoho-sync-worker` (no exposed port) |
 | **Redis** | `zoho-sync-redis` container |
@@ -77,10 +77,6 @@ Claude must never ask the user to perform a programmer action that Claude can do
 | Asking user to paste an API key in the terminal | Use the Global Env Editor panel (Dashboard) |
 <!-- GSD:non-programmer-contract-end -->
 
-- **REQUIREMENTS.md** — 37 requirements with stable REQ-IDs
-- **ROADMAP.md** — 8 phases
-- **STATE.md** — current position
-
 ## Environment Variables (all required)
 
 ```
@@ -89,11 +85,12 @@ ZOHO_CLIENT_SECRET
 ZOHO_REFRESH_TOKEN
 ZOHO_USER_ID
 ZOHO_REGION=eu
+ZOHO_ORG_ID                  # Zoho org identifier for task URLs
 ZOHO_TODOIST_TASK_ID_FIELD   # resolved at startup from Zoho settings
 ZOHO_TERMINAL_STATUSES=Completed
 ZOHO_JOB_DEFER_SECS=2
 TODOIST_API_TOKEN
-TODOIST_PROJECT_ID=6gCPcWwM392GhXQh
+TODOIST_PROJECT_ID
 TODOIST_CLIENT_SECRET        # for HMAC webhook verification
 RESEND_API_KEY
 DATABASE_URL
