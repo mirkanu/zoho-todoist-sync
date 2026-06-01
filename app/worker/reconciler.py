@@ -177,6 +177,7 @@ async def orphan_sweep(ctx: dict) -> None:
         zoho_missing = False
         todoist_missing = False
         todoist_task = None
+        zoho_data: dict | None = None
 
         # ------------------------------------------------------------------
         # Zoho check: existence + ownership (EDGE-1 reassignment detection)
@@ -184,6 +185,7 @@ async def orphan_sweep(ctx: dict) -> None:
         try:
             response = await zoho_client.get_task(state.zoho_task_id)
             data = (response.get("data") or [{}])[0]
+            zoho_data = data
             owner_raw = (data.get("Owner") or {}).get("id", "")
             # V5 input validation: ensure str before comparison (T-7-07)
             if not isinstance(owner_raw, str):
@@ -269,7 +271,10 @@ async def orphan_sweep(ctx: dict) -> None:
             continue
 
         # Second consecutive detection → orphan confirmed; handle it
-        await _handle_orphan(state, zoho_missing, todoist_missing, ctx)
+        await _handle_orphan(
+            state, zoho_missing, todoist_missing, ctx,
+            todoist_task=todoist_task, zoho_data=zoho_data,
+        )
 
     # ------------------------------------------------------------------
     # Persist last-run timestamp
@@ -286,6 +291,8 @@ async def _handle_orphan(
     zoho_missing: bool,
     todoist_missing: bool,
     ctx: dict,
+    todoist_task: Any = None,
+    zoho_data: dict | None = None,
 ) -> None:
     """Delete the live counterpart of a confirmed orphan pair, send notification,
     delete the sync_state row, and log a SyncEvent. EDGE-1, EDGE-2, EDGE-6.
@@ -297,8 +304,12 @@ async def _handle_orphan(
 
     if zoho_missing:
         # Zoho task gone or reassigned (EDGE-1) → delete Todoist counterpart
+        # todoist_task is the live object fetched earlier in the sweep (content = task name)
+        task_name = getattr(todoist_task, "content", None)
         try:
-            await delete_todoist_task(state.todoist_task_id, ctx["todoist_client"]._api)
+            await delete_todoist_task(
+                state.todoist_task_id, ctx["todoist_client"]._api, task_name=task_name
+            )
         except Exception as exc:
             log.error(
                 "orphan_todoist_delete_failed",
@@ -308,9 +319,11 @@ async def _handle_orphan(
 
     if todoist_missing:
         # Todoist task gone (EDGE-2) → delete Zoho counterpart
+        # zoho_data is the live record fetched earlier in the sweep (Subject = task name)
+        task_name = (zoho_data or {}).get("Subject")
         try:
             access_token = token_state["access_token"]
-            await delete_zoho_task(state.zoho_task_id, access_token)
+            await delete_zoho_task(state.zoho_task_id, access_token, task_name=task_name)
         except Exception as exc:
             log.error(
                 "orphan_zoho_delete_failed",

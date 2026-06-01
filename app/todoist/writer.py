@@ -98,7 +98,11 @@ async def complete_todoist_task(task_id: str, todoist_api: TodoistAPIAsync) -> N
     log.info("todoist_task_completed", todoist_id=task_id)
 
 
-async def delete_todoist_task(task_id: str, todoist_api: TodoistAPIAsync) -> None:
+async def delete_todoist_task(
+    task_id: str,
+    todoist_api: TodoistAPIAsync,
+    task_name: str | None = None,
+) -> None:
     """EDGE-1: delete task + send Resend email. 404 is idempotent (no email). EDGE-6: Resend failure logged."""
     try:
         await todoist_api.delete_task(task_id)
@@ -108,8 +112,13 @@ async def delete_todoist_task(task_id: str, todoist_api: TodoistAPIAsync) -> Non
             return  # already gone — do NOT send email (Pitfall 5)
         _raise_typed(exc.response.status_code, f"delete_task {task_id}", exc)
     log.info("todoist_task_deleted", todoist_id=task_id)
+    display_name = task_name or task_id
+    name_line = f"<p><strong>Task:</strong> {task_name} <code>({task_id})</code></p>" if task_name else f"<p><strong>Task ID:</strong> <code>{task_id}</code></p>"
     await send_deletion_notification(
-        subject=f"[zoho-todoist-sync] Todoist task deleted: {task_id}",
-        html=f"<p>Todoist task <code>{task_id}</code> was deleted by the sync service "
-             f"(propagation from Zoho reassignment or direct deletion).</p>",
+        subject=f"[zoho-todoist-sync] Todoist task deleted: {display_name}",
+        html=(
+            f"{name_line}"
+            f"<p>The Todoist task was deleted by the sync service because the corresponding "
+            f"Zoho task was deleted or reassigned.</p>"
+        ),
     )

@@ -92,7 +92,11 @@ async def complete_zoho_task(zoho_task_id: str, access_token: str) -> None:
     log.info("zoho_task_completed", zoho_id=zoho_task_id, status=terminal)
 
 
-async def delete_zoho_task(zoho_task_id: str, access_token: str) -> None:
+async def delete_zoho_task(
+    zoho_task_id: str,
+    access_token: str,
+    task_name: str | None = None,
+) -> None:
     """EDGE-2: DELETE Zoho task + Resend email. 404 is idempotent (no email). EDGE-6: Resend failure logged."""
     async with httpx.AsyncClient() as client:
         resp = await client.delete(
@@ -104,10 +108,15 @@ async def delete_zoho_task(zoho_task_id: str, access_token: str) -> None:
         return  # already gone - do NOT send email (Pitfall 5)
     _zoho_handle(resp, f"DELETE /Tasks/{zoho_task_id}")
     log.info("zoho_task_deleted", zoho_id=zoho_task_id)
+    display_name = task_name or zoho_task_id
+    name_line = f"<p><strong>Task:</strong> {task_name} <code>({zoho_task_id})</code></p>" if task_name else f"<p><strong>Task ID:</strong> <code>{zoho_task_id}</code></p>"
     await send_deletion_notification(
-        subject=f"[zoho-todoist-sync] Zoho task deleted: {zoho_task_id}",
-        html=f"<p>Zoho task <code>{zoho_task_id}</code> was deleted by the sync service "
-             f"(propagation from a Todoist deletion).</p>",
+        subject=f"[zoho-todoist-sync] Zoho task deleted: {display_name}",
+        html=(
+            f"{name_line}"
+            f"<p>The Zoho CRM task was deleted by the sync service because the corresponding "
+            f"Todoist task was deleted.</p>"
+        ),
     )
 
 
