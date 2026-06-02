@@ -2,7 +2,7 @@
 
 > **Personal project:** This was built to solve a specific problem for the author. It works for that purpose. It has not been tested for general deployment and is not actively maintained — use it as inspiration or a starting point, not a supported tool.
 
-> **100% AI-generated:** No code was written by hand. Every file was produced by [Claude Code](https://claude.ai/claude-code) via the [GSD workflow](https://github.com/pablof7z/gsd). The author is a non-programmer building personal tools with AI. PRs are welcome — if one arrives, Claude Code will review and merge it. Issues are unlikely to receive a response.
+> **100% AI-generated:** No code was written by hand. Every file was produced by [Claude Code](https://claude.ai/claude-code) via the [GSD workflow](https://github.com/open-gsd/gsd-core). The author is a non-programmer building personal tools with AI. PRs are welcome — if one arrives, Claude Code will review and merge it. Issues are unlikely to receive a response.
 
 A two-way sync service between Zoho CRM tasks (assigned to you) and a single Todoist project. New Zoho tasks appear in Todoist within about a minute; completions, title changes, and due date changes flow in both directions. The hard problem with any two-way sync is the feedback loop: a change in system A triggers an update in system B, which triggers an update back in system A, indefinitely. This service solves that by computing a canonical hash of each task's key fields and ignoring any incoming change that matches the hash it last wrote — so echoed updates are dropped before they fan out, not after.
 
