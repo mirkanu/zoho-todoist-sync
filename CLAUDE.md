@@ -20,6 +20,8 @@ Migrated from Railway to Hetzner VPS on 2026-04-25.
 | **Redis** | `zoho-sync-redis` container |
 | **Database** | `zoho-sync-db` PostgreSQL container |
 | **Compose file** | `/home/services/hetzner-vps/docker-compose.yml` |
+| **Public URL** | `https://zoho.gsdlabs.dev` (Cloudflare tunnel, remote config) |
+| **Webhook URL** | `https://zoho.gsdlabs.dev/webhooks/zoho` (auto-renewed by worker cron every 45 min) |
 | **Railway** | No longer used |
 
 ## Key Facts
