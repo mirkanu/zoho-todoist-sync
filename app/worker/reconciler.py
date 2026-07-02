@@ -29,7 +29,7 @@ KV_RECONCILER_LAST_RUN = "reconciler_last_run"
 KV_ORPHAN_SWEEP_LAST_RUN = "orphan_sweep_last_run"
 RECONCILE_LOOKBACK_MINUTES = 20
 
-_ZOHO_WEBHOOK_URL = "https://zoho-sync.gsdlabs.dev/webhooks/zoho"
+_ZOHO_WEBHOOK_URL = "https://zoho.gsdlabs.dev/webhooks/zoho"
 _ZOHO_CHANNEL_ID = "1"
 
 
