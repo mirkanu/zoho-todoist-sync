@@ -2,7 +2,14 @@ node_modules/
 .env
 .env.local
 .env.*.local
-.planning/
+
+# .planning operational history — may contain infra-specific details
+# Keep: ROADMAP.md, PROJECT.md, REQUIREMENTS.md, milestones/, seeds/, notes/, research/, todos/, spikes/
+.planning/phases/
+.planning/quick/
+.planning/debug/
+.planning/threads/
+.planning/config.json
 *.swp
 *.swo
 .DS_Store
