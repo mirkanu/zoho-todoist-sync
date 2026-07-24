@@ -11,6 +11,7 @@ REQUIRED_ENV = {
     "TODOIST_API_TOKEN": "test-todoist-token",
     "TODOIST_PROJECT_ID": "test-project-id",
     "TODOIST_CLIENT_SECRET": "test-todoist-client-secret",
+    "NIRVANA_PAT": "test-nirvana-pat",
     "RESEND_API_KEY": "test-resend-key",
     "DATABASE_URL": "postgresql+asyncpg://test:test@localhost:5432/test",
     "REDIS_URL": "redis://localhost:6379/0",
