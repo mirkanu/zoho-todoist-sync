@@ -28,10 +28,16 @@ Two-way sync between Zoho CRM Tasks (assigned to me) and a Todoist project. 8 ph
   4. The Zoho picklist priority maps onto Nirvana's two independent axes (`state` + `starred`), not a single enum
   5. The worker polls Nirvana on an interval (hourly default, configurable) since Nirvana has no webhook equivalent
   6. Switching `TASK_PROVIDER` back to `todoist` restores the original working behavior with no data loss
-**Plans**: TBD — set during `/gsd-plan-phase 9`
+**Plans**: 7 plans
 
 Plans:
-- [ ] 09-01: TBD
+- [ ] 09-01-PLAN.md — Settings fields (TASK_PROVIDER/NIRVANA_PAT/poll interval) + Todoist-int<->Nirvana two-axis priority mapping
+- [ ] 09-02-PLAN.md — sync_state schema: rename todoist_task_id -> external_task_id, add provider column (migration + backfill)
+- [ ] 09-03-PLAN.md — app/nirvana/ package: NirvanaClient, writer functions, normalise
+- [ ] 09-04-PLAN.md — TaskProvider Protocol + get_provider() factory; TodoistClient Protocol conformance
+- [ ] 09-05-PLAN.md — Rewire worker jobs, Todoist webhook route, and app/main.py through TaskProvider
+- [ ] 09-06-PLAN.md — Generalize orphan_sweep to TaskProvider; add nirvana_poll_sweep cron function
+- [ ] 09-07-PLAN.md — Wire arq worker settings (on_startup/on_shutdown/cron_jobs) through TaskProvider and register nirvana_poll_sweep
 
 ## Progress
 
@@ -41,4 +47,4 @@ Phases execute in numeric order: 1 → 2 → ... → 8 → 9
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|-----------------|--------|-----------|
 | 1-8. (see CLAUDE.md) | v1.0 | 8/8 phases | Complete | 2026-05-01 |
-| 9. Nirvana TaskProvider | v1.1 | 0/TBD | Not started | - |
+| 9. Nirvana TaskProvider | v1.1 | 0/7 | Not started | - |
