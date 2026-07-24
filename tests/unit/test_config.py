@@ -56,6 +56,31 @@ def test_log_level_default(complete_env):
     assert s.log_level == "INFO"
 
 
+def test_nirvana_pat_from_complete_env(complete_env):
+    from app.core.config import Settings
+    s = Settings()
+    assert s.nirvana_pat == "test-nirvana-pat"
+
+
+def test_nirvana_pat_missing_raises(complete_env, monkeypatch):
+    from app.core.config import Settings
+    monkeypatch.delenv("NIRVANA_PAT", raising=False)
+    with pytest.raises(Exception):
+        Settings()
+
+
+def test_task_provider_default(complete_env):
+    from app.core.config import Settings
+    s = Settings()
+    assert s.task_provider == "todoist"
+
+
+def test_nirvana_poll_interval_secs_default(complete_env):
+    from app.core.config import Settings
+    s = Settings()
+    assert s.nirvana_poll_interval_secs == 3600
+
+
 def test_terminal_statuses_list_single():
     from app.core.config import Settings
     s = Settings.model_construct(zoho_terminal_statuses="Completed")
