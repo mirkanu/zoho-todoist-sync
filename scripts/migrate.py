@@ -132,7 +132,8 @@ async def _upsert_sync_state(
     async with session_factory() as session:
         row = SyncState(
             zoho_task_id=zoho_task_id,
-            todoist_task_id=todoist_task_id,
+            external_task_id=todoist_task_id,
+            provider="todoist",
             last_hash=last_hash,
             last_synced_at=now,
         )

@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Index, Integer,
+    BigInteger, Boolean, CheckConstraint, Column, DateTime, Index, Integer,
     String, Text, func
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -13,7 +13,8 @@ class Base(DeclarativeBase):
 class SyncState(Base):
     __tablename__ = "sync_state"
     zoho_task_id     = Column(String, primary_key=True)
-    todoist_task_id  = Column(String, nullable=False)
+    external_task_id = Column(String, nullable=False)
+    provider         = Column(String(16), nullable=False, server_default="todoist")
     last_hash        = Column(String(64), nullable=False)
     last_synced_at   = Column(DateTime(timezone=True), nullable=False)
     zoho_last_seen   = Column(DateTime(timezone=True), nullable=True)
@@ -21,7 +22,8 @@ class SyncState(Base):
     created_at       = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
-        Index("idx_sync_state_todoist_task_id", "todoist_task_id"),
+        Index("idx_sync_state_external_task_id", "external_task_id"),
+        CheckConstraint("provider IN ('todoist', 'nirvana')", name="ck_sync_state_provider"),
     )
 
 

@@ -183,7 +183,7 @@ async def test_link_existing_pair_hash(complete_env, monkeypatch):
     expected_hash = canonical_hash(zoho_record_to_normalised(SAMPLE_RECORD_WITH_ID, TERMINAL_STATUSES))
     assert state_row.last_hash == expected_hash
     assert state_row.zoho_task_id == "ZOHO-123"
-    assert state_row.todoist_task_id == "TD-456"
+    assert state_row.external_task_id == "TD-456"
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +392,7 @@ async def test_canonical_hash_seeded(complete_env, monkeypatch):
     assert isinstance(added_obj, SyncState)
     assert added_obj.last_hash == expected_hash
     assert added_obj.zoho_task_id == "ZOHO-123"
-    assert added_obj.todoist_task_id == "TD-456"
+    assert added_obj.external_task_id == "TD-456"
 
 
 # ---------------------------------------------------------------------------

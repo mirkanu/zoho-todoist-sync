@@ -10,7 +10,7 @@ def test_sync_state_tablename():
 def test_sync_state_columns_exist():
     cols = {c.name for c in SyncState.__table__.columns}
     assert cols == {
-        "zoho_task_id", "todoist_task_id", "last_hash",
+        "zoho_task_id", "external_task_id", "provider", "last_hash",
         "last_synced_at", "zoho_last_seen", "orphan_check_count",
         "created_at",
     }
@@ -33,9 +33,24 @@ def test_sync_state_last_synced_at_is_timezone_aware():
     assert not col.nullable
 
 
-def test_sync_state_has_todoist_task_id_index():
+def test_sync_state_has_external_task_id_index():
     names = {ix.name for ix in SyncState.__table__.indexes}
-    assert "idx_sync_state_todoist_task_id" in names
+    assert "idx_sync_state_external_task_id" in names
+
+
+def test_sync_state_provider_is_string_16_with_default():
+    col = SyncState.__table__.columns["provider"]
+    assert col.type.length == 16
+    assert not col.nullable
+    assert col.server_default is not None
+
+
+def test_sync_state_provider_has_check_constraint():
+    names = {
+        c.name for c in SyncState.__table__.constraints
+        if c.__class__.__name__ == "CheckConstraint"
+    }
+    assert "ck_sync_state_provider" in names
 
 
 def test_sync_events_tablename():
