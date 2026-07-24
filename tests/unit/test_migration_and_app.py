@@ -336,6 +336,7 @@ def test_main_py_importable_with_env():
         "TODOIST_API_TOKEN": "x",
         "TODOIST_PROJECT_ID": "x",
         "TODOIST_CLIENT_SECRET": "x",
+        "NIRVANA_PAT": "x",
         "RESEND_API_KEY": "x",
         "DATABASE_URL": "postgresql+asyncpg://x:x@localhost/x",
         "REDIS_URL": "redis://localhost:6379/0",
