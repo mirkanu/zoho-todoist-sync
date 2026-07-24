@@ -86,6 +86,7 @@ None - plan executed exactly as written. One environment quirk was handled witho
 
 ## Issues Encountered
 - `tests/unit/test_config.py::test_settings_succeeds_with_complete_env` fails independent of this plan's changes (asserts a hardcoded `todoist_project_id == "6gCPcWwM392GhXQh"` against the `complete_env` fixture's `"test-project-id"` value — a pre-existing test/fixture mismatch). Confirmed via `git stash` that this failure exists identically on the pre-plan commit. Left untouched as out of scope for this plan.
+- `tests/unit/test_backfill_descriptions.py`, `test_todoist_description.py`, `test_todoist_writer.py`, `test_zoho_writer.py` fail to collect in this specific shell session because `app/core/config.py`'s module-level `settings = get_settings()` singleton runs at import time and this session's shell has partial real production env vars leaked in (e.g. real `ZOHO_CLIENT_ID`/`TODOIST_API_TOKEN` but not `database_url`/`redis_url`/etc). Reproduced the identical failure with env vars explicitly unset, confirming it is pre-existing/environmental and not caused by adding `nirvana_pat` — the plan's own `<verification>` block scopes to `tests/unit/test_config.py tests/unit/test_priority.py` only, both of which pass.
 
 ## User Setup Required
 None - no external service configuration required. `NIRVANA_PAT` was already present in `/home/services/.env.production` from the spike session (D-03); `TASK_PROVIDER=todoist` was added as a safe default that requires no user action.
