@@ -9,7 +9,7 @@ REQUIRED_ENV = {
     "ZOHO_USER_ID": "test-user-id",
     "ZOHO_ORG_ID": "test-org",
     "TODOIST_API_TOKEN": "test-todoist-token",
-    "TODOIST_PROJECT_ID": "test-project-id",
+    "TODOIST_PROJECT_ID": "6gCPcWwM392GhXQh",
     "TODOIST_CLIENT_SECRET": "test-todoist-client-secret",
     "NIRVANA_PAT": "test-nirvana-pat",
     "RESEND_API_KEY": "test-resend-key",
