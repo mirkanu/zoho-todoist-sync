@@ -12,6 +12,7 @@ def _make_reconciler_ctx():
         "session_factory": MagicMock(),
         "zoho_client": AsyncMock(),
         "todoist_client": AsyncMock(),
+        "task_provider": AsyncMock(),
     }
 
 
@@ -468,7 +469,8 @@ def _make_state(zoho_task_id="Z1", todoist_task_id="T1", orphan_check_count=0):
     """Build a SyncState-like mock with explicit attribute assignment."""
     state = MagicMock()
     state.zoho_task_id = zoho_task_id
-    state.todoist_task_id = todoist_task_id
+    state.external_task_id = todoist_task_id
+    state.provider = "todoist"
     state.last_hash = "abc123"
     state.orphan_check_count = orphan_check_count
     return state
@@ -480,8 +482,9 @@ def _healthy_zoho_response(zoho_task_id="Z1", owner_id="test-user-id"):
 
 
 def _healthy_todoist_task(zoho_task_id="Z1"):
+    """A NormalisedTask-shaped mock, matching what task_provider.fetch() now returns."""
     task = MagicMock()
-    task.description = "some content"
+    task.title = "some content"
     return task
 
 
@@ -491,7 +494,6 @@ def _common_orphan_patches(monkeypatch):
     mock_delete_zoho = AsyncMock()
     mock_send_notification = AsyncMock()
     mock_upsert = AsyncMock()
-    monkeypatch.setattr("app.worker.reconciler.delete_todoist_task", mock_delete_todoist)
     monkeypatch.setattr("app.worker.reconciler.delete_zoho_task", mock_delete_zoho)
     monkeypatch.setattr("app.worker.reconciler.send_deletion_notification", mock_send_notification)
     monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
@@ -524,7 +526,7 @@ async def test_orphan_first_cycle(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Must NOT delete anything on first cycle
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # The locked row's orphan_check_count must have been incremented
     assert sess.get.await_count >= 1, "session.get was not called to lock the row"
@@ -547,7 +549,7 @@ async def test_orphan_second_cycle_deletion(complete_env, monkeypatch):
 
     ctx["zoho_client"].get_task = AsyncMock(side_effect=ZohoNotFoundError("not found"))
     # Todoist is healthy (not missing)
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
@@ -555,9 +557,9 @@ async def test_orphan_second_cycle_deletion(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Todoist counterpart must be deleted (Zoho gone → delete Todoist)
-    mock_delete_todoist.assert_called_once()
-    call_args = mock_delete_todoist.call_args
-    assert call_args.args[0] == state.todoist_task_id
+    ctx["task_provider"].delete.assert_called_once()
+    call_args = ctx["task_provider"].delete.call_args
+    assert call_args.args[0] == state.external_task_id
 
     # SyncState row must be deleted
     sess.delete.assert_awaited()
@@ -593,7 +595,7 @@ async def test_orphan_reassignment_detected(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # First cycle: should NOT delete
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get called to increment count
     assert sess.get.await_count >= 1
@@ -619,7 +621,7 @@ async def test_orphan_todoist_missing(complete_env, monkeypatch):
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
     # Todoist is missing
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         side_effect=TodoistNotFoundError("not found")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
@@ -653,14 +655,14 @@ async def test_orphan_count_reset(complete_env, monkeypatch):
     ctx["zoho_client"].get_task = AsyncMock(
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
 
     await orphan_sweep(ctx)
 
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get called to reset count
     assert sess.get.await_count >= 1
@@ -687,7 +689,7 @@ async def test_orphan_zoho_rate_limit_skipped(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Row skipped — no deletes, no count increment (no session.get call to increment)
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get should NOT have been called (no increment/delete)
     sess.get.assert_not_awaited()
@@ -711,14 +713,14 @@ async def test_orphan_todoist_rate_limit_skipped(complete_env, monkeypatch):
     ctx["zoho_client"].get_task = AsyncMock(
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         side_effect=TodoistRateLimitError("rate limited")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
 
     await orphan_sweep(ctx)
 
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     sess.get.assert_not_awaited()
 
@@ -754,7 +756,7 @@ async def test_orphan_sweep_drift_enqueues_sync(complete_env, monkeypatch):
         }]}
     )
     # Todoist is healthy
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
 
@@ -770,7 +772,7 @@ async def test_orphan_sweep_drift_enqueues_sync(complete_env, monkeypatch):
     assert call.kwargs.get("source") == "orphan_drift"
     assert call.kwargs.get("defer_secs") == 0
     # Nothing should be deleted
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
 
 
@@ -804,7 +806,7 @@ async def test_orphan_sweep_healthy_no_drift_no_enqueue(complete_env, monkeypatc
     ctx["session_factory"] = factory
 
     ctx["zoho_client"].get_task = AsyncMock(return_value={"data": [zoho_data]})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
 

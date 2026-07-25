@@ -11,9 +11,9 @@ from app.core.hash import canonical_hash
 from app.core.logging import get_logger
 from app.core.notifications import send_deletion_notification
 from app.db.models import SyncEvent, SyncState
+from app.nirvana.client import NirvanaAPIError, NirvanaNotFoundError, NirvanaRateLimitError
 from app.todoist.client import TodoistAPIError, TodoistNotFoundError, TodoistRateLimitError
 from app.todoist.sync_manager import load_sync_token, save_sync_token
-from app.todoist.writer import delete_todoist_task
 from app.worker.enqueue import enqueue_sync
 from app.zoho.client import ZohoAPIError, ZohoNotFoundError, ZohoRateLimitError
 from app.zoho.normalise import zoho_record_to_normalised
@@ -128,7 +128,7 @@ async def reconcile_sweep(ctx: dict) -> None:
         async with session_factory() as session:
             result = await session.execute(
                 select(SyncState.zoho_task_id).where(
-                    SyncState.todoist_task_id == todoist_id
+                    SyncState.external_task_id == todoist_id
                 )
             )
             zoho_id = result.scalar_one_or_none()
@@ -160,7 +160,7 @@ async def orphan_sweep(ctx: dict) -> None:
     """
     session_factory = ctx["session_factory"]
     zoho_client = ctx["zoho_client"]
-    todoist_client = ctx["todoist_client"]
+    task_provider = ctx["task_provider"]
     settings = get_settings()
 
     log.info("orphan_sweep_start")
@@ -176,7 +176,7 @@ async def orphan_sweep(ctx: dict) -> None:
     for state in rows:
         zoho_missing = False
         todoist_missing = False
-        todoist_task = None
+        external_task = None
         zoho_data: dict | None = None
 
         # ------------------------------------------------------------------
@@ -208,16 +208,16 @@ async def orphan_sweep(ctx: dict) -> None:
             continue  # SKIP — do not count as 404; retry next sweep
 
         # ------------------------------------------------------------------
-        # Todoist check: existence
+        # External (Todoist/Nirvana) check: existence
         # ------------------------------------------------------------------
         try:
-            todoist_task = await todoist_client.fetch_todoist_task(state.todoist_task_id)
-        except TodoistNotFoundError:
+            external_task = await task_provider.fetch(state.external_task_id)
+        except (TodoistNotFoundError, NirvanaNotFoundError):
             todoist_missing = True
-        except (TodoistRateLimitError, TodoistAPIError) as exc:
+        except (TodoistRateLimitError, TodoistAPIError, NirvanaRateLimitError, NirvanaAPIError) as exc:
             log.warning(
-                "orphan_sweep_todoist_api_error",
-                todoist_task_id=state.todoist_task_id,
+                "orphan_sweep_external_api_error",
+                external_task_id=state.external_task_id,
                 error=str(exc),
             )
             continue  # SKIP — do not count as 404; retry next sweep
@@ -273,7 +273,7 @@ async def orphan_sweep(ctx: dict) -> None:
         # Second consecutive detection → orphan confirmed; handle it
         await _handle_orphan(
             state, zoho_missing, todoist_missing, ctx,
-            todoist_task=todoist_task, zoho_data=zoho_data,
+            todoist_task=external_task, zoho_data=zoho_data,
         )
 
     # ------------------------------------------------------------------
@@ -297,23 +297,22 @@ async def _handle_orphan(
     """Delete the live counterpart of a confirmed orphan pair, send notification,
     delete the sync_state row, and log a SyncEvent. EDGE-1, EDGE-2, EDGE-6.
 
-    Note: delete_todoist_task and delete_zoho_task already send Resend notifications
+    Note: task_provider.delete() and delete_zoho_task already send Resend notifications
     internally (EDGE-6). No double-notification here.
     """
     session_factory = ctx["session_factory"]
 
     if zoho_missing:
-        # Zoho task gone or reassigned (EDGE-1) → delete Todoist counterpart
-        # todoist_task is the live object fetched earlier in the sweep (content = task name)
-        task_name = getattr(todoist_task, "content", None)
+        # Zoho task gone or reassigned (EDGE-1) → delete external counterpart.
+        # external_task is a NormalisedTask (task_provider.fetch() already
+        # normalises) — use its .title, not a raw SDK object's .content.
+        task_name = getattr(todoist_task, "title", None) if todoist_task is not None else None
         try:
-            await delete_todoist_task(
-                state.todoist_task_id, ctx["todoist_client"]._api, task_name=task_name
-            )
+            await ctx["task_provider"].delete(state.external_task_id, task_name=task_name)
         except Exception as exc:
             log.error(
-                "orphan_todoist_delete_failed",
-                todoist_task_id=state.todoist_task_id,
+                "orphan_external_delete_failed",
+                external_task_id=state.external_task_id,
                 error=str(exc),
             )
 
@@ -342,7 +341,7 @@ async def _handle_orphan(
                 action="orphan",
                 source="reconciler",
                 detail={
-                    "todoist_task_id": state.todoist_task_id,
+                    "external_task_id": state.external_task_id,
                     "zoho_missing": zoho_missing,
                     "todoist_missing": todoist_missing,
                 },
