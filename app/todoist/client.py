@@ -15,6 +15,7 @@ from todoist_api_python.api_async import TodoistAPIAsync
 from todoist_api_python.models import Task
 
 from app.core.logging import get_logger
+from app.core.normalise import NormalisedTask
 
 log = get_logger(__name__)
 
@@ -106,3 +107,36 @@ class TodoistClient:
             project_filtered=project_id is not None,
         )
         return items, new_token
+
+    # ---- TaskProvider protocol conformance (see app/providers/base.py) ----
+    # Thin delegation only — internals stay in app/todoist/writer.py unchanged.
+
+    async def fetch(self, external_id: str) -> "NormalisedTask":
+        from app.todoist.normalise import todoist_task_to_normalised
+
+        task = await self.fetch_todoist_task(external_id)
+        return todoist_task_to_normalised(task)
+
+    async def create(
+        self, normalised: "NormalisedTask", zoho_task_id: str, description: str | None = None
+    ) -> str:
+        from app.todoist.writer import create_todoist_task
+
+        return await create_todoist_task(
+            normalised, zoho_task_id, self._api, description=description
+        )
+
+    async def update(self, external_id: str, normalised: "NormalisedTask") -> None:
+        from app.todoist.writer import update_todoist_task
+
+        await update_todoist_task(external_id, normalised, self._api)
+
+    async def complete(self, external_id: str) -> None:
+        from app.todoist.writer import complete_todoist_task
+
+        await complete_todoist_task(external_id, self._api)
+
+    async def delete(self, external_id: str, task_name: str | None = None) -> None:
+        from app.todoist.writer import delete_todoist_task
+
+        await delete_todoist_task(external_id, self._api, task_name=task_name)
