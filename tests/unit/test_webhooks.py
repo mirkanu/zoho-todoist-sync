@@ -248,11 +248,10 @@ async def test_lifespan_wires_arq_redis_and_session_factory(monkeypatch, complet
             return meta_return
     monkeypatch.setattr("app.main.ZohoClient", FakeZohoClient)
 
-    # Stub TodoistClient
-    class FakeTodoistClient:
-        def __init__(self, api_token): pass
+    # Stub task provider
+    class FakeTaskProvider:
         async def close(self): pass
-    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+    monkeypatch.setattr("app.main.get_provider", lambda settings: FakeTaskProvider())
 
     # Stub startup_sync
     monkeypatch.setattr("app.main.startup_sync", AsyncMock())
