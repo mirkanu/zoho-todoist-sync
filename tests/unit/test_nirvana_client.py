@@ -1,4 +1,5 @@
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -9,6 +10,7 @@ from app.nirvana.client import (
     NirvanaNotFoundError,
     NirvanaRateLimitError,
 )
+from app.core.normalise import NormalisedTask
 
 BASE_URL = "https://mcp.nirvanahq.com/playground/run"
 
@@ -174,3 +176,76 @@ async def test_get_task_counts_calls_call_tool(httpx_mock):
     result = await client.get_task_counts()
     assert result == {"next": 3}
     await client.close()
+
+
+# --- Task 3: Protocol-conformant methods ---
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_normalised_task(httpx_mock):
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/get_tasks",
+        method="POST",
+        json={
+            "ok": True,
+            "result": [
+                {"id": "other", "name": "Other", "state": "next", "starred": False},
+                {"id": "N1", "name": "Buy milk", "state": "next", "starred": True, "duedate": "2026-08-01"},
+            ],
+        },
+    )
+    client = NirvanaClient(pat="pat")
+    result = await client.fetch("N1")
+    assert isinstance(result, NormalisedTask)
+    assert result.title == "Buy milk"
+    assert result.due_date == "2026-08-01"
+    assert result.priority == 4
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_fetch_missing_id_raises_not_found(httpx_mock):
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/get_tasks",
+        method="POST",
+        json={"ok": True, "result": [{"id": "other", "name": "Other"}]},
+    )
+    client = NirvanaClient(pat="pat")
+    with pytest.raises(NirvanaNotFoundError):
+        await client.fetch("N-missing")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_delegates_to_create_nirvana_task_and_accepts_description():
+    client = NirvanaClient(pat="pat")
+    normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
+    with patch("app.nirvana.writer.create_nirvana_task", new=AsyncMock(return_value="N9")) as mocked:
+        result = await client.create(normalised, "Z1", description="x")
+    mocked.assert_awaited_once_with(normalised, "Z1", client)
+    assert result == "N9"
+
+
+@pytest.mark.asyncio
+async def test_update_delegates_to_update_nirvana_task():
+    client = NirvanaClient(pat="pat")
+    normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
+    with patch("app.nirvana.writer.update_nirvana_task", new=AsyncMock()) as mocked:
+        await client.update("N1", normalised)
+    mocked.assert_awaited_once_with("N1", normalised, client)
+
+
+@pytest.mark.asyncio
+async def test_complete_delegates_to_complete_nirvana_task():
+    client = NirvanaClient(pat="pat")
+    with patch("app.nirvana.writer.complete_nirvana_task", new=AsyncMock()) as mocked:
+        await client.complete("N1")
+    mocked.assert_awaited_once_with("N1", client)
+
+
+@pytest.mark.asyncio
+async def test_delete_delegates_to_delete_nirvana_task():
+    client = NirvanaClient(pat="pat")
+    with patch("app.nirvana.writer.delete_nirvana_task", new=AsyncMock()) as mocked:
+        await client.delete("N1", task_name="Buy milk")
+    mocked.assert_awaited_once_with("N1", client, task_name="Buy milk")

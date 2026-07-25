@@ -82,3 +82,43 @@ class NirvanaClient:
 
     async def update_tasks(self, updates: list[dict[str, Any]]) -> Any:
         return await self.call_tool("update_tasks", {"updates": updates})
+
+    # ---- TaskProvider protocol conformance (see app/providers/base.py, Plan 04) ----
+
+    async def fetch(self, external_id: str) -> Any:
+        """Fetch one task by id. Nirvana's get_tasks has no single-id filter (only
+        state/tags/query/starred/overdue/due_before per D-04) — scans up to 200
+        results and matches by id. Acceptable at personal-account scale (D-09);
+        documented limitation if the account exceeds 200 active items, see
+        RESEARCH.md Pitfall 4."""
+        from app.nirvana.normalise import nirvana_task_to_normalised
+
+        tasks = await self.get_tasks(limit=200)
+        for task in tasks:
+            if str(task.get("id")) == str(external_id):
+                return nirvana_task_to_normalised(task)
+        raise NirvanaNotFoundError(f"404 Not Found — task {external_id} not in get_tasks() scan")
+
+    async def create(self, normalised: Any, zoho_task_id: str, description: str | None = None) -> str:
+        # description intentionally ignored: Nirvana has no description field,
+        # and description sync stays out of scope for Nirvana per CONTEXT.md.
+        # Parameter exists only so this method's signature matches
+        # TodoistClient.create()'s, satisfying the shared TaskProvider Protocol.
+        from app.nirvana.writer import create_nirvana_task
+
+        return await create_nirvana_task(normalised, zoho_task_id, self)
+
+    async def update(self, external_id: str, normalised: Any) -> None:
+        from app.nirvana.writer import update_nirvana_task
+
+        await update_nirvana_task(external_id, normalised, self)
+
+    async def complete(self, external_id: str) -> None:
+        from app.nirvana.writer import complete_nirvana_task
+
+        await complete_nirvana_task(external_id, self)
+
+    async def delete(self, external_id: str, task_name: str | None = None) -> None:
+        from app.nirvana.writer import delete_nirvana_task
+
+        await delete_nirvana_task(external_id, self, task_name=task_name)
