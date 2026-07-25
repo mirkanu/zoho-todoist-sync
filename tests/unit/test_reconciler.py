@@ -847,3 +847,179 @@ async def test_orphan_sweep_last_run_updated(complete_env, monkeypatch):
     assert isinstance(ts_value, str)
     parsed = datetime.fromisoformat(ts_value)
     assert parsed.tzinfo is not None  # must be tz-aware (UTC)
+
+
+# ===========================================================================
+# nirvana_poll_sweep tests
+# ===========================================================================
+
+class _FakeSettings:
+    """Minimal stand-in for Settings — nirvana_poll_sweep only reads .task_provider."""
+
+    def __init__(self, task_provider: str) -> None:
+        self.task_provider = task_provider
+
+
+def _make_nirvana_ctx():
+    """Build a minimal arq ctx dict for nirvana_poll_sweep."""
+    mock_redis = AsyncMock()
+    mock_redis.enqueue_job = AsyncMock(return_value=MagicMock())
+    return {
+        "redis": mock_redis,
+        "session_factory": MagicMock(),
+        "task_provider": AsyncMock(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Test 20: task_provider != "nirvana" -> no-op (no get_tasks, no enqueue_sync)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_inactive_noop(complete_env, monkeypatch):
+    """When TASK_PROVIDER != 'nirvana', nirvana_poll_sweep returns immediately
+    without calling get_tasks or enqueue_sync."""
+    from app.worker.reconciler import nirvana_poll_sweep
+
+    ctx = _make_nirvana_ctx()
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("todoist"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+
+    await nirvana_poll_sweep(ctx)
+
+    ctx["task_provider"].get_tasks.assert_not_called()
+    ctx["task_provider"].get_task_counts.assert_not_called()
+    mock_enqueue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 21: nirvana active, hash mismatch against sync_state -> enqueue_sync
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_enqueues_on_hash_mismatch(complete_env, monkeypatch):
+    """Nirvana active: matched sync_state row with a stale hash -> enqueue_sync
+    called with the linked zoho_task_id, source='nirvana_poll'."""
+    from app.worker.reconciler import nirvana_poll_sweep
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": 1})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+        {"id": "N1", "name": "Buy milk", "duedate": "2026-05-01", "state": "next", "starred": False, "completed": None},
+    ])
+
+    state = MagicMock()
+    state.zoho_task_id = "Z1"
+    state.last_hash = "stale_hash_value"
+    factory, sess = _mock_session_factory_with_state(state)
+    ctx["session_factory"] = factory
+
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    mock_upsert = AsyncMock()
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", mock_upsert)
+
+    await nirvana_poll_sweep(ctx)
+
+    mock_enqueue.assert_called_once()
+    call = mock_enqueue.call_args
+    assert call.args[0] is ctx["redis"]
+    assert call.args[1] == "Z1"
+    assert call.kwargs.get("defer_secs") == 0
+    assert call.kwargs.get("source") == "nirvana_poll"
+
+
+# ---------------------------------------------------------------------------
+# Test 22: nirvana active, no matching sync_state row -> skipped, not enqueued
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_unmatched_task_skipped(complete_env, monkeypatch):
+    """A raw Nirvana task with no matching sync_state row is skipped, not enqueued
+    (mirrors reconcile_todoist_not_in_sync_state's philosophy)."""
+    from app.worker.reconciler import nirvana_poll_sweep
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": 1})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+        {"id": "N-native", "name": "Native nirvana task", "duedate": None, "state": "next", "starred": False, "completed": None},
+    ])
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
+
+    await nirvana_poll_sweep(ctx)
+
+    mock_enqueue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 23: 200-item cap hit -> warning logged
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_cap_hit_warning(complete_env, monkeypatch):
+    """When get_tasks returns exactly NIRVANA_POLL_LIMIT items, a
+    'nirvana_poll_sweep_cap_hit' warning is logged."""
+    from app.worker.reconciler import nirvana_poll_sweep, NIRVANA_POLL_LIMIT
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": NIRVANA_POLL_LIMIT})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+        {"id": f"N{i}", "name": f"Task {i}", "duedate": None, "state": "next", "starred": False, "completed": None}
+        for i in range(NIRVANA_POLL_LIMIT)
+    ])
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    mock_log = MagicMock()
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
+    monkeypatch.setattr("app.worker.reconciler.log", mock_log)
+
+    await nirvana_poll_sweep(ctx)
+
+    warning_events = [c.args[0] for c in mock_log.warning.call_args_list]
+    assert "nirvana_poll_sweep_cap_hit" in warning_events
+
+
+# ---------------------------------------------------------------------------
+# Test 24: nirvana_poll_sweep_last_run upserted with ISO timestamp
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_last_run_updated(complete_env, monkeypatch):
+    """At end of sweep (when active), upsert_kv called with
+    'nirvana_poll_sweep_last_run' and an ISO-8601 tz-aware timestamp."""
+    from datetime import datetime
+    from app.worker.reconciler import nirvana_poll_sweep, KV_NIRVANA_POLL_LAST_RUN
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[])
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    mock_upsert = AsyncMock()
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", mock_upsert)
+
+    await nirvana_poll_sweep(ctx)
+
+    assert mock_upsert.call_count == 1
+    call_args = mock_upsert.call_args
+    assert call_args.args[1] == KV_NIRVANA_POLL_LAST_RUN
+    ts_value = call_args.args[2]
+    parsed = datetime.fromisoformat(ts_value)
+    assert parsed.tzinfo is not None

@@ -12,6 +12,7 @@ from app.core.logging import get_logger
 from app.core.notifications import send_deletion_notification
 from app.db.models import SyncEvent, SyncState
 from app.nirvana.client import NirvanaAPIError, NirvanaNotFoundError, NirvanaRateLimitError
+from app.nirvana.normalise import nirvana_task_to_normalised
 from app.todoist.client import TodoistAPIError, TodoistNotFoundError, TodoistRateLimitError
 from app.todoist.sync_manager import load_sync_token, save_sync_token
 from app.worker.enqueue import enqueue_sync
@@ -149,6 +150,71 @@ async def reconcile_sweep(ctx: dict) -> None:
         zoho_count=len(zoho_records),
         todoist_count=len(items),
     )
+
+
+KV_NIRVANA_POLL_LAST_RUN = "nirvana_poll_sweep_last_run"
+NIRVANA_POLL_LIMIT = 200  # get_tasks() hard cap (D-04) — RESEARCH.md Pitfall 4
+
+
+async def nirvana_poll_sweep(ctx: dict) -> None:
+    """Nirvana has no webhook equivalent (D-09) — this cron is the ONLY signal for
+    Nirvana-side changes. Always registered (Plan 07); no-ops when TASK_PROVIDER
+    is not 'nirvana', mirroring the D-13 pattern used for the Todoist webhook route
+    so switching providers never requires touching cron registration.
+
+    Full-list poll + diff against sync_state, mirroring reconcile_sweep's Zoho-side
+    diff loop. Bounded by get_tasks' 200-item cap — logs a warning when the cap is
+    hit so staleness beyond 200 active Nirvana items is observable, not silent.
+    """
+    settings = get_settings()
+    if settings.task_provider != "nirvana":
+        log.debug("nirvana_poll_sweep_inactive", active_provider=settings.task_provider)
+        return
+
+    redis = ctx["redis"]
+    session_factory = ctx["session_factory"]
+    task_provider = ctx["task_provider"]
+
+    counts = await task_provider.get_task_counts()
+    log.info("nirvana_poll_sweep_start", counts=counts)
+
+    tasks = await task_provider.get_tasks(limit=NIRVANA_POLL_LIMIT)
+    if len(tasks) == NIRVANA_POLL_LIMIT:
+        log.warning(
+            "nirvana_poll_sweep_cap_hit",
+            limit=NIRVANA_POLL_LIMIT,
+            hint="Account may have >200 active items; some may be missed this cycle.",
+        )
+
+    enqueued = 0
+    for raw_task in tasks:
+        nirvana_id = str(raw_task.get("id"))
+        norm = nirvana_task_to_normalised(raw_task)
+        current_hash = canonical_hash(norm)
+
+        async with session_factory() as session:
+            result = await session.execute(
+                select(SyncState).where(
+                    SyncState.external_task_id == nirvana_id,
+                    SyncState.provider == "nirvana",
+                )
+            )
+            state = result.scalar_one_or_none()
+
+        if state is None:
+            log.debug("nirvana_poll_sweep_unmatched_task", nirvana_id=nirvana_id)
+            continue
+
+        if state.last_hash != current_hash:
+            log.info("nirvana_poll_sweep_enqueued", zoho_task_id=state.zoho_task_id)
+            await enqueue_sync(redis, state.zoho_task_id, defer_secs=0, source="nirvana_poll")
+            enqueued += 1
+
+    async with session_factory() as session:
+        await upsert_kv(session, KV_NIRVANA_POLL_LAST_RUN, datetime.now(timezone.utc).isoformat())
+        await session.commit()
+
+    log.info("nirvana_poll_sweep_complete", task_count=len(tasks), enqueued=enqueued)
 
 
 async def orphan_sweep(ctx: dict) -> None:
