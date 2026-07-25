@@ -1,5 +1,8 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
+from app.core.normalise import NormalisedTask
 from app.todoist.client import (
     TodoistClient,
     TodoistAuthError,
@@ -187,3 +190,78 @@ async def test_sync_delta_sends_bearer_auth(httpx_mock):
     req = httpx_mock.get_request()
     assert req.headers["Authorization"] == "Bearer secret-token-value"
     await client.close()
+
+
+# ---- TaskProvider protocol conformance (Plan 09-04) ----
+
+SOME_NORMALISED = NormalisedTask(
+    title="Buy milk", due_date="2026-07-25", priority=3, is_completed=False
+)
+
+
+@pytest.mark.asyncio
+async def test_provider_fetch_delegates_to_fetch_todoist_task_and_normalises():
+    client = TodoistClient(api_token="tok")
+    fake_task = object()
+    with (
+        patch.object(client, "fetch_todoist_task", new=AsyncMock(return_value=fake_task)) as mock_fetch,
+        patch("app.todoist.normalise.todoist_task_to_normalised", return_value=SOME_NORMALISED) as mock_norm,
+    ):
+        result = await client.fetch("123")
+    mock_fetch.assert_awaited_once_with("123")
+    mock_norm.assert_called_once_with(fake_task)
+    assert result == SOME_NORMALISED
+
+
+@pytest.mark.asyncio
+async def test_provider_create_without_description_delegates():
+    client = TodoistClient(api_token="tok")
+    with patch(
+        "app.todoist.writer.create_todoist_task", new=AsyncMock(return_value="T1")
+    ) as mock_create:
+        result = await client.create(SOME_NORMALISED, "Z1")
+    mock_create.assert_awaited_once_with(SOME_NORMALISED, "Z1", client._api, description=None)
+    assert result == "T1"
+
+
+@pytest.mark.asyncio
+async def test_provider_create_with_description_preserves_desc_1_4_behavior():
+    client = TodoistClient(api_token="tok")
+    with patch(
+        "app.todoist.writer.create_todoist_task", new=AsyncMock(return_value="T2")
+    ) as mock_create:
+        result = await client.create(SOME_NORMALISED, "Z1", description="<p>context</p>")
+    mock_create.assert_awaited_once_with(
+        SOME_NORMALISED, "Z1", client._api, description="<p>context</p>"
+    )
+    assert result == "T2"
+
+
+@pytest.mark.asyncio
+async def test_provider_update_delegates():
+    client = TodoistClient(api_token="tok")
+    with patch(
+        "app.todoist.writer.update_todoist_task", new=AsyncMock(return_value=None)
+    ) as mock_update:
+        await client.update("T1", SOME_NORMALISED)
+    mock_update.assert_awaited_once_with("T1", SOME_NORMALISED, client._api)
+
+
+@pytest.mark.asyncio
+async def test_provider_complete_delegates():
+    client = TodoistClient(api_token="tok")
+    with patch(
+        "app.todoist.writer.complete_todoist_task", new=AsyncMock(return_value=None)
+    ) as mock_complete:
+        await client.complete("T1")
+    mock_complete.assert_awaited_once_with("T1", client._api)
+
+
+@pytest.mark.asyncio
+async def test_provider_delete_delegates():
+    client = TodoistClient(api_token="tok")
+    with patch(
+        "app.todoist.writer.delete_todoist_task", new=AsyncMock(return_value=None)
+    ) as mock_delete:
+        await client.delete("T1", task_name="X")
+    mock_delete.assert_awaited_once_with("T1", client._api, task_name="X")
