@@ -65,13 +65,13 @@ async def _lookup_zoho_id(session_factory, todoist_task_id: str) -> str | None:
     """Single indexed read of sync_state; returns zoho_task_id or None.
 
     This is the ONLY DB operation permitted inside a webhook handler. The
-    column `sync_state.todoist_task_id` is indexed (idx_sync_state_todoist_task_id),
+    column `sync_state.external_task_id` is indexed (idx_sync_state_external_task_id),
     so this is O(log n) and well inside the 200ms handler SLA.
     """
     async with session_factory() as session:
         result = await session.execute(
             select(SyncState.zoho_task_id).where(
-                SyncState.todoist_task_id == todoist_task_id
+                SyncState.external_task_id == todoist_task_id
             )
         )
         return result.scalar_one_or_none()
@@ -104,6 +104,13 @@ async def todoist_webhook(request: Request):
     received = request.headers.get("X-Todoist-Hmac-SHA256", "")
     if not hmac.compare_digest(expected, received):
         raise HTTPException(status_code=401, detail="invalid signature")
+
+    if settings.task_provider != "todoist":
+        log.info(
+            "todoist_webhook_provider_inactive",
+            active_provider=settings.task_provider,
+        )
+        return {"ok": True}
 
     try:
         payload = await request.json()  # safe: body already cached by Starlette

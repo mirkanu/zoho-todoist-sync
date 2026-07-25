@@ -63,13 +63,14 @@ def _patched_lifespan(monkeypatch, complete_env):
         await asyncio.sleep(3600)   # sleeps until cancelled
     monkeypatch.setattr("app.main.proactive_refresh_loop", fake_loop)
 
-    # Stub Todoist wiring so existing tests aren't broken by Task 2 additions.
-    class FakeTodoistClient:
-        def __init__(self, api_token):
+    # Stub provider wiring so existing tests aren't broken by Task 2 additions.
+    class FakeTaskProvider:
+        def __init__(self, api_token=None):
             self.api_token = api_token
         async def close(self):
             pass
-    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+    fake_provider_instance = FakeTaskProvider(api_token="fake-token")
+    monkeypatch.setattr("app.main.get_provider", lambda settings: fake_provider_instance)
 
     async def fake_startup_sync(client, factory, settings):
         pass
@@ -174,7 +175,8 @@ async def test_lifespan_logs_warn_when_todoist_field_missing(_patched_lifespan, 
 async def test_lifespan_initialises_todoist_client_and_runs_startup_sync(
     monkeypatch, complete_env
 ):
-    """TodoistClient constructed and startup_sync called inside lifespan startup."""
+    """get_provider() is called and startup_sync runs inside lifespan startup
+    when TASK_PROVIDER=todoist (the complete_env default)."""
     from app.core.config import get_settings
     get_settings.cache_clear()
 
@@ -209,16 +211,19 @@ async def test_lifespan_initialises_todoist_client_and_runs_startup_sync(
         await asyncio.sleep(3600)
     monkeypatch.setattr("app.main.proactive_refresh_loop", fake_loop)
 
-    # Track Todoist wiring
-    todoist_constructions = []
-    class FakeTodoistClient:
-        def __init__(self, api_token):
-            todoist_constructions.append(api_token)
+    # Track provider wiring
+    provider_constructions = []
+    class FakeTaskProvider:
+        def __init__(self):
             self.closed = False
         async def close(self):
             self.closed = True
 
-    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+    fake_provider = FakeTaskProvider()
+    def fake_get_provider(settings):
+        provider_constructions.append(settings)
+        return fake_provider
+    monkeypatch.setattr("app.main.get_provider", fake_get_provider)
 
     startup_sync_calls = []
     async def fake_startup_sync(client, factory, settings):
@@ -235,13 +240,75 @@ async def test_lifespan_initialises_todoist_client_and_runs_startup_sync(
     app = FastAPI()
     async with lifespan(app):
         # Assertions inside running lifespan
-        assert len(todoist_constructions) == 1
-        assert todoist_constructions[0]  # non-empty token passed
+        assert len(provider_constructions) == 1
         assert len(startup_sync_calls) == 1
-        assert hasattr(app.state, "todoist_client")
-        assert isinstance(app.state.todoist_client, FakeTodoistClient)
+        assert hasattr(app.state, "task_provider")
+        assert app.state.task_provider is fake_provider
     # After context exit, close was awaited
-    assert app.state.todoist_client.closed is True
+    assert app.state.task_provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_lifespan_skips_startup_sync_when_nirvana_active(monkeypatch, complete_env):
+    """D-09: with TASK_PROVIDER=nirvana, startup_sync (Todoist Sync-API warm-up)
+    is never called — Nirvana has no equivalent concept."""
+    monkeypatch.setenv("TASK_PROVIDER", "nirvana")
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    monkeypatch.setattr("app.main.create_async_engine", lambda *a, **k: fake_engine)
+
+    fake_session = AsyncMock()
+    fake_session.__aenter__.return_value = fake_session
+    fake_session.__aexit__.return_value = None
+    fake_session_factory = MagicMock(return_value=fake_session)
+    monkeypatch.setattr("app.main.async_sessionmaker", lambda *a, **k: fake_session_factory)
+
+    monkeypatch.setattr("app.main.refresh_access_token", AsyncMock(
+        return_value=("tok", datetime.now(timezone.utc))
+    ))
+    monkeypatch.setattr("app.main.load_token_from_kv", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr("app.main.upsert_kv", AsyncMock())
+
+    meta_mock = AsyncMock(return_value={
+        "todoist_task_id_api_name": "Todoist_Task_ID",
+        "status_picklist_values": ["Completed"],
+    })
+    class FakeZohoClient:
+        def __init__(self, access_token): pass
+        async def get_fields_metadata(self, module="Tasks"):
+            return await meta_mock(module)
+    monkeypatch.setattr("app.main.ZohoClient", FakeZohoClient)
+
+    async def fake_loop(ts, sf):
+        await asyncio.sleep(3600)
+    monkeypatch.setattr("app.main.proactive_refresh_loop", fake_loop)
+
+    class FakeTaskProvider:
+        def __init__(self):
+            self.closed = False
+        async def close(self):
+            self.closed = True
+    fake_provider = FakeTaskProvider()
+    monkeypatch.setattr("app.main.get_provider", lambda settings: fake_provider)
+
+    startup_sync_mock = AsyncMock()
+    monkeypatch.setattr("app.main.startup_sync", startup_sync_mock)
+
+    fake_redis = AsyncMock()
+    fake_redis.aclose = AsyncMock()
+    monkeypatch.setattr("app.main.create_pool", AsyncMock(return_value=fake_redis))
+
+    from app.main import lifespan
+    app = FastAPI()
+    try:
+        async with lifespan(app):
+            startup_sync_mock.assert_not_called()
+            assert app.state.task_provider is fake_provider
+    finally:
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
@@ -280,10 +347,9 @@ async def test_lifespan_startup_sync_failure_propagates(monkeypatch, complete_en
         await asyncio.sleep(3600)
     monkeypatch.setattr("app.main.proactive_refresh_loop", fake_loop)
 
-    class FakeTodoistClient:
-        def __init__(self, api_token): pass
+    class FakeTaskProvider:
         async def close(self): pass
-    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+    monkeypatch.setattr("app.main.get_provider", lambda settings: FakeTaskProvider())
 
     from app.todoist.client import TodoistAuthError
     async def failing_startup_sync(*a, **kw):

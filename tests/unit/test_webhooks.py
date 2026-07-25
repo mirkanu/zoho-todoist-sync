@@ -248,11 +248,10 @@ async def test_lifespan_wires_arq_redis_and_session_factory(monkeypatch, complet
             return meta_return
     monkeypatch.setattr("app.main.ZohoClient", FakeZohoClient)
 
-    # Stub TodoistClient
-    class FakeTodoistClient:
-        def __init__(self, api_token): pass
+    # Stub task provider
+    class FakeTaskProvider:
         async def close(self): pass
-    monkeypatch.setattr("app.main.TodoistClient", FakeTodoistClient)
+    monkeypatch.setattr("app.main.get_provider", lambda settings: FakeTaskProvider())
 
     # Stub startup_sync
     monkeypatch.setattr("app.main.startup_sync", AsyncMock())
@@ -655,3 +654,40 @@ def test_todoist_event_data_id_as_int_tolerated(webhook_client):
     args, kwargs = mock_enqueue.call_args
     assert args[1] == "Z-int"
     assert kwargs.get("defer_secs") == 0
+
+
+# ---------------------------------------------------------------------------
+# D-13: /webhooks/todoist no-ops when a non-Todoist provider is active
+# ---------------------------------------------------------------------------
+
+def test_todoist_webhook_noop_when_provider_inactive(webhook_client, monkeypatch):
+    """D-13: with TASK_PROVIDER=nirvana, a validly-signed Todoist webhook still
+    returns 200 but performs zero DB writes/lookups and zero enqueue calls."""
+    from app.main import app
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("TASK_PROVIDER", "nirvana")
+    get_settings.cache_clear()
+
+    session_factory = _mock_session_factory_returning("Z-inactive")
+    app.state.session_factory = session_factory
+
+    raw_body = json.dumps({
+        "event_name": "item:updated",
+        "event_data": {"id": "T-inactive", "project_id": "6gCPcWwM392GhXQh"},
+    }).encode("utf-8")
+    sig = _make_hmac(raw_body)
+
+    try:
+        with patch("app.webhooks.router.enqueue_sync", new_callable=AsyncMock) as mock_enqueue:
+            resp = webhook_client.post(
+                "/webhooks/todoist",
+                content=raw_body,
+                headers={"X-Todoist-Hmac-SHA256": sig, "Content-Type": "application/json"},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        mock_enqueue.assert_not_awaited()
+        session_factory.assert_not_called()
+    finally:
+        get_settings.cache_clear()

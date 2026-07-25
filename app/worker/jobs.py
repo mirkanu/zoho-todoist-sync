@@ -1,21 +1,21 @@
-"""arq worker job: sync_task — the full Zoho <-> Todoist sync pipeline for one task.
+"""arq worker job: sync_task — the full Zoho <-> external-provider sync pipeline for one task.
 
 Pipeline:
   1. Acquire SETNX Redis lock `lock:sync:{zoho_task_id}` (30s TTL) — defence-in-depth dedup.
   2. Fetch live Zoho record via ctx['zoho_client'].get_task().
-  3. Look up sync_state row; if missing -> create Todoist task, write ID back to Zoho,
-     insert sync_state + log action='sync'.
-  4. Fetch live Todoist task via ctx['todoist_client'].get_task().
+  3. Look up sync_state row; if missing -> create task on the active provider, write
+     ID back to Zoho, insert sync_state + log action='sync'.
+  4. Fetch live external-provider task via ctx['task_provider'].fetch().
   5. Compute canonical_hash on both normalised views.
   6. SELECT FOR UPDATE the sync_state row (critical section).
   7. Compare hashes against last_hash -> echo_suppressed | sync | overwrite.
-  8. Write to target via writer module, update state.last_hash + last_synced_at, log event.
+  8. Write to target via task_provider, update state.last_hash + last_synced_at, log event.
   9. Release SETNX lock in finally.
 
 Retry: transient API errors raise Retry(defer=RETRY_DELAYS[job_try]).
 LWW direction: Zoho wins on simultaneous divergence (SYNC-11).
-Bootstrap race (LOOP-5): after a legitimate Zoho→Todoist write, the resulting
-Todoist webhook is suppressed by the echo_suppressed path (hash match).
+Bootstrap race (LOOP-5): after a legitimate Zoho→external write, the resulting
+webhook/poll-detected echo is suppressed by the echo_suppressed path (hash match).
 """
 from __future__ import annotations
 
@@ -30,16 +30,15 @@ from app.core.hash import canonical_hash
 from app.core.logging import get_logger
 from app.core.normalise import NormalisedTask
 from app.db.models import SyncEvent, SyncState
+from app.nirvana.client import (
+    NirvanaAPIError,
+    NirvanaNotFoundError,
+    NirvanaRateLimitError,
+)
 from app.todoist.client import (
     TodoistAPIError,
     TodoistNotFoundError,
     TodoistRateLimitError,
-)
-from app.todoist.normalise import todoist_task_to_normalised
-from app.todoist.writer import (
-    complete_todoist_task,
-    create_todoist_task,
-    update_todoist_task,
 )
 from app.zoho.client import (
     ZohoAPIError,
@@ -88,19 +87,19 @@ async def _write_failure_event(
 
 
 async def sync_task(ctx: dict, zoho_task_id: str, source: str = "worker") -> None:
-    """Full Zoho <-> Todoist sync pipeline for one task. arq job entry point.
+    """Full Zoho <-> external-provider sync pipeline for one task. arq job entry point.
 
     ctx keys (populated by WorkerSettings.on_startup + arq itself):
       - redis: ArqRedis (injected by arq)
       - session_factory: async_sessionmaker
       - zoho_client: ZohoClient
-      - todoist_client: TodoistClient
+      - task_provider: TaskProvider
       - job_try: int (injected by arq, 1-indexed)
     """
     redis = ctx["redis"]
     session_factory = ctx["session_factory"]
     zoho_client = ctx["zoho_client"]
-    todoist_client = ctx["todoist_client"]
+    task_provider = ctx["task_provider"]
     job_try: int = ctx["job_try"]
 
     lock_key = f"lock:sync:{zoho_task_id}"
@@ -111,7 +110,7 @@ async def sync_task(ctx: dict, zoho_task_id: str, source: str = "worker") -> Non
 
     try:
         await _execute_sync(
-            zoho_task_id, session_factory, zoho_client, todoist_client, job_try, source
+            zoho_task_id, session_factory, zoho_client, task_provider, job_try, source
         )
     except ZohoAuthError as exc:
         # Token stale (proactive_refresh_loop updates token_state but not client.access_token).
@@ -130,7 +129,14 @@ async def sync_task(ctx: dict, zoho_task_id: str, source: str = "worker") -> Non
             await _s.commit()
         log.warning("sync_task_auth_refreshed_retry", zoho_task_id=zoho_task_id, attempt=job_try)
         raise Retry(defer=RETRY_DELAYS.get(job_try, 60)) from exc
-    except (ZohoRateLimitError, ZohoAPIError, TodoistRateLimitError, TodoistAPIError) as exc:
+    except (
+        ZohoRateLimitError,
+        ZohoAPIError,
+        TodoistRateLimitError,
+        TodoistAPIError,
+        NirvanaRateLimitError,
+        NirvanaAPIError,
+    ) as exc:
         delay = RETRY_DELAYS.get(job_try, 60)
         log.error(
             "sync_task_api_error_will_retry",
@@ -147,7 +153,7 @@ async def sync_task(ctx: dict, zoho_task_id: str, source: str = "worker") -> Non
         # For Phase 5, log and return (no retry).
         await _write_failure_event(zoho_task_id, session_factory, exc, job_try)
         log.warning("sync_task_zoho_not_found", zoho_task_id=zoho_task_id)
-    except TodoistNotFoundError as exc:
+    except (TodoistNotFoundError, NirvanaNotFoundError) as exc:
         await _write_failure_event(zoho_task_id, session_factory, exc, job_try)
         log.warning("sync_task_todoist_not_found", zoho_task_id=zoho_task_id)
     finally:
@@ -158,7 +164,7 @@ async def _execute_sync(
     zoho_task_id: str,
     session_factory: Any,
     zoho_client: Any,
-    todoist_client: Any,
+    task_provider: Any,
     job_try: int,
     source: str = "worker",
 ) -> None:
@@ -178,16 +184,16 @@ async def _execute_sync(
         state = result.scalar_one_or_none()
 
     if state is None:
-        await _handle_new_task(zoho_task_id, zoho_record, zoho_norm, todoist_client, session_factory, source)
+        await _handle_new_task(zoho_task_id, zoho_record, zoho_norm, task_provider, session_factory, source)
         return
 
-    # [3] Fetch live Todoist state.
-    todoist_task = await todoist_client.fetch_todoist_task(state.todoist_task_id)
-    todoist_norm = todoist_task_to_normalised(todoist_task)
+    # [3] Fetch live external-provider state. task_provider.fetch() already
+    # returns a NormalisedTask — no separate *_to_normalised() call needed.
+    external_norm = await task_provider.fetch(state.external_task_id)
 
     # [4] Compute canonical hashes.
     zoho_hash = canonical_hash(zoho_norm)
-    todoist_hash = canonical_hash(todoist_norm)
+    external_hash = canonical_hash(external_norm)
 
     # [5] Critical section: SELECT FOR UPDATE + hash compare + conditional write + log.
     async with session_factory() as session:
@@ -201,7 +207,7 @@ async def _execute_sync(
             last_hash = state.last_hash
 
             # Echo suppression: both sides already match persisted hash.
-            if zoho_hash == last_hash and todoist_hash == last_hash:
+            if zoho_hash == last_hash and external_hash == last_hash:
                 session.add(SyncEvent(
                     zoho_task_id=zoho_task_id,
                     action="echo_suppressed",
@@ -212,24 +218,24 @@ async def _execute_sync(
                 return
 
             # Direction + action decision (LWW: Zoho wins on simultaneous divergence).
-            if zoho_hash != last_hash and todoist_hash != last_hash:
+            if zoho_hash != last_hash and external_hash != last_hash:
                 action = "overwrite"
-                direction = "zoho_to_todoist"
+                direction = "zoho_to_external"
                 target_norm = zoho_norm
                 new_hash = zoho_hash
             elif zoho_hash != last_hash:
                 action = "sync"
-                direction = "zoho_to_todoist"
+                direction = "zoho_to_external"
                 target_norm = zoho_norm
                 new_hash = zoho_hash
             else:
                 action = "sync"
-                direction = "todoist_to_zoho"
-                target_norm = todoist_norm
-                new_hash = todoist_hash
+                direction = "external_to_zoho"
+                target_norm = external_norm
+                new_hash = external_hash
 
             await _apply_write(
-                direction, state, target_norm, zoho_task_id, todoist_client
+                direction, state, target_norm, zoho_task_id, task_provider
             )
 
             state.last_hash = new_hash
@@ -253,15 +259,15 @@ async def _apply_write(
     state: Any,
     target_norm: NormalisedTask,
     zoho_task_id: str,
-    todoist_client: Any,
+    task_provider: Any,
 ) -> None:
     """Route write to the correct target based on direction and is_completed."""
-    if direction == "zoho_to_todoist":
+    if direction == "zoho_to_external":
         if target_norm.is_completed:
-            await complete_todoist_task(state.todoist_task_id, todoist_client._api)
+            await task_provider.complete(state.external_task_id)
         else:
-            await update_todoist_task(state.todoist_task_id, target_norm, todoist_client._api)
-    else:  # todoist_to_zoho
+            await task_provider.update(state.external_task_id, target_norm)
+    else:  # external_to_zoho
         access_token = token_state["access_token"]
         if target_norm.is_completed:
             await complete_zoho_task(zoho_task_id, access_token)
@@ -273,23 +279,23 @@ async def _handle_new_task(
     zoho_task_id: str,
     zoho_record: dict,              # raw record for What_Id extraction (DESC-1)
     zoho_norm: NormalisedTask,
-    todoist_client: Any,
+    task_provider: Any,
     session_factory: Any,
     source: str = "worker",
 ) -> None:
     """No sync_state row — check Zoho Todoist_Task_ID field first (idempotency guard),
     then create a new task if none exists. Prevents duplicates when a previous run
-    created the Todoist task but crashed before persisting sync_state.
+    created the external-provider task but crashed before persisting sync_state.
     """
     from app.todoist.description import build_task_description, _extract_related_to_name
 
-    # Guard: if Zoho already records a Todoist task ID, try to link it rather
+    # Guard: if Zoho already records an external task ID, try to link it rather
     # than blindly creating another. This handles crash-between-create-and-persist.
     field_api_name = zoho_field_cache.get("todoist_task_id_api_name") or "Todoist_Task_ID"
-    existing_todoist_id = zoho_record.get(field_api_name)
-    if existing_todoist_id:
+    existing_external_id = zoho_record.get(field_api_name)
+    if existing_external_id:
         try:
-            await todoist_client.fetch_todoist_task(existing_todoist_id)
+            await task_provider.fetch(existing_external_id)
             # Task still exists — link it without creating a duplicate.
             new_hash = canonical_hash(zoho_norm)
             now = datetime.now(timezone.utc)
@@ -297,7 +303,8 @@ async def _handle_new_task(
                 async with session.begin():
                     session.add(SyncState(
                         zoho_task_id=zoho_task_id,
-                        todoist_task_id=existing_todoist_id,
+                        external_task_id=existing_external_id,
+                        provider=get_settings().task_provider,
                         last_hash=new_hash,
                         last_synced_at=now,
                         orphan_check_count=0,
@@ -306,37 +313,36 @@ async def _handle_new_task(
                         zoho_task_id=zoho_task_id,
                         action="sync",
                         source=source,
-                        detail={"direction": "zoho_to_todoist", "linked": True},
+                        detail={"direction": "zoho_to_external", "linked": True},
                     ))
             log.info(
                 "sync_task_existing_link",
                 zoho_task_id=zoho_task_id,
-                todoist_id=existing_todoist_id,
+                todoist_id=existing_external_id,
             )
             return
-        except TodoistNotFoundError:
-            # Todoist task was deleted; fall through to create a new one.
+        except (TodoistNotFoundError, NirvanaNotFoundError):
+            # External task was deleted; fall through to create a new one.
             log.warning(
                 "sync_task_existing_link_not_found",
                 zoho_task_id=zoho_task_id,
-                todoist_id=existing_todoist_id,
+                todoist_id=existing_external_id,
             )
 
     related_to_name = _extract_related_to_name(zoho_record)
     description = build_task_description(zoho_task_id, related_to_name)
-    todoist_id = await create_todoist_task(
-        zoho_norm, zoho_task_id, todoist_client._api, description=description
-    )
+    external_id = await task_provider.create(zoho_norm, zoho_task_id, description=description)
     # Persist sync_state BEFORE writing back to Zoho. This means a Zoho write failure
     # causes a retry that takes the update path (sync_state found) rather than creating
-    # a duplicate Todoist task. Zoho field write is best-effort / recovery metadata only.
+    # a duplicate external task. Zoho field write is best-effort / recovery metadata only.
     new_hash = canonical_hash(zoho_norm)
     now = datetime.now(timezone.utc)
     async with session_factory() as session:
         async with session.begin():
             session.add(SyncState(
                 zoho_task_id=zoho_task_id,
-                todoist_task_id=todoist_id,
+                external_task_id=external_id,
+                provider=get_settings().task_provider,
                 last_hash=new_hash,
                 last_synced_at=now,
                 orphan_check_count=0,
@@ -345,19 +351,19 @@ async def _handle_new_task(
                 zoho_task_id=zoho_task_id,
                 action="sync",
                 source=source,
-                detail={"direction": "zoho_to_todoist", "created": True},
+                detail={"direction": "zoho_to_external", "created": True},
             ))
     log.info(
         "sync_task_new_task_created",
         zoho_task_id=zoho_task_id,
-        todoist_id=todoist_id,
+        todoist_id=external_id,
     )
     try:
-        await write_todoist_id_to_zoho(zoho_task_id, todoist_id, token_state["access_token"])
+        await write_todoist_id_to_zoho(zoho_task_id, external_id, token_state["access_token"])
     except Exception as exc:
         log.warning(
             "zoho_todoist_id_write_failed_non_fatal",
             zoho_task_id=zoho_task_id,
-            todoist_id=todoist_id,
+            todoist_id=external_id,
             error=str(exc),
         )

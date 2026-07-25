@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
-from app.todoist.client import TodoistClient
+from app.providers.base import get_provider
 from app.todoist.sync_manager import startup_sync
 from app.zoho.client import ZohoClient
 from app.zoho.state import token_state, zoho_field_cache
@@ -103,21 +103,26 @@ async def lifespan(app: FastAPI):
     )
     app.state.zoho_refresh_task = refresh_task
 
-    # 4. Initialise TodoistClient and run startup sync (loads/persists sync_token,
-    #    filters footerless items). A failure (TodoistAuthError) propagates and
-    #    halts boot — matches Zoho's fail-fast posture (SYNC-5).
-    todoist_client = TodoistClient(api_token=settings.todoist_api_token)
+    # 4. Initialise the active TaskProvider and run startup sync (loads/persists
+    #    sync_token, filters footerless items) — Todoist only. A failure
+    #    (TodoistAuthError) propagates and halts boot — matches Zoho's fail-fast
+    #    posture (SYNC-5).
+    task_provider = get_provider(settings)
     try:
-        await startup_sync(todoist_client, session_factory, settings)
+        # startup_sync is Todoist's Sync-API-token warm-up; Nirvana has no equivalent
+        # concept (D-09: it relies on the poll cron picking up drift within
+        # NIRVANA_POLL_INTERVAL_SECS instead of a startup delta fetch).
+        if settings.task_provider == "todoist":
+            await startup_sync(task_provider, session_factory, settings)
     except Exception:
-        await todoist_client.close()  # prevent httpx client leak on boot failure
+        await task_provider.close()  # prevent client leak on boot failure
         refresh_task.cancel()
         try:
             await refresh_task
         except (asyncio.CancelledError, Exception):
             pass
         raise
-    app.state.todoist_client = todoist_client
+    app.state.task_provider = task_provider
 
     # 5. Create ArqRedis pool for webhook job enqueue (Phase 6).
     redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
@@ -133,8 +138,8 @@ async def lifespan(app: FastAPI):
         await refresh_task
     except (asyncio.CancelledError, Exception):
         pass
-    # Close the Todoist HTTP client (frees httpx.AsyncClient).
-    await app.state.todoist_client.close()
+    # Close the task provider's HTTP client (frees httpx.AsyncClient).
+    await app.state.task_provider.close()
     # Close the ArqRedis pool (Phase 6).
     await app.state.redis.aclose()
     await engine.dispose()
