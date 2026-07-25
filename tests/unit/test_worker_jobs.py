@@ -26,7 +26,7 @@ def _make_ctx(lock_acquired=True, job_try=1):
         "redis": mock_redis,
         "session_factory": MagicMock(),   # overridden per-test
         "zoho_client": AsyncMock(),
-        "todoist_client": AsyncMock(),
+        "task_provider": AsyncMock(),
         "job_try": job_try,
     }
 
@@ -100,38 +100,37 @@ async def test_sync_task_lock_released_in_finally(complete_env):
 
 @pytest.mark.asyncio
 async def test_echo_suppressed_when_all_hashes_match(complete_env):
-    """LOOP-1: When zoho_hash == todoist_hash == last_hash, no write is performed."""
+    """LOOP-1: When zoho_hash == external_hash == last_hash, no write is performed."""
     from app.worker.jobs import sync_task
 
     norm = _norm(title="task A", prio=2)
     h = canonical_hash(norm)
 
     state = MagicMock()
-    state.todoist_task_id = "T111"
+    state.external_task_id = "T111"
     state.last_hash = h
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={"title": "task A"})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm)
+    ctx["task_provider"].update = AsyncMock()
+    ctx["task_provider"].complete = AsyncMock()
+    ctx["task_provider"].create = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm),
-        patch("app.worker.jobs.update_todoist_task") as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task") as mock_update_zoho,
-        patch("app.worker.jobs.create_todoist_task") as mock_create,
-        patch("app.worker.jobs.complete_todoist_task") as mock_complete_tod,
         patch("app.worker.jobs.complete_zoho_task") as mock_complete_zoho,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
-    mock_update_tod.assert_not_called()
+    ctx["task_provider"].update.assert_not_called()
+    ctx["task_provider"].complete.assert_not_called()
+    ctx["task_provider"].create.assert_not_called()
     mock_update_zoho.assert_not_called()
-    mock_create.assert_not_called()
-    mock_complete_tod.assert_not_called()
     mock_complete_zoho.assert_not_called()
 
     # A SyncEvent with action='echo_suppressed' must have been added
@@ -158,19 +157,18 @@ async def test_select_for_update_is_called(complete_env):
 
     # Existing state with a different hash so we enter the critical section
     state = MagicMock()
-    state.todoist_task_id = "T222"
+    state.external_task_id = "T222"
     state.last_hash = "old_hash_value_that_differs_from_both"
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_b)
+    ctx["task_provider"].update = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_a),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_b),
-        patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock),
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock),
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
@@ -200,12 +198,12 @@ async def test_select_for_update_is_called(complete_env):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: New task — creates in Todoist, writes ID back, inserts sync_state
+# Test 5: New task — creates via task_provider, writes ID back, inserts sync_state
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_new_task_creates_todoist_and_writes_id_back(complete_env):
-    """New task (no sync_state row) → create in Todoist, write ID back, insert sync_state."""
+    """New task (no sync_state row) → create via task_provider, write ID back, insert sync_state."""
     from app.worker.jobs import sync_task
 
     norm = _norm(title="New Task")
@@ -213,23 +211,19 @@ async def test_new_task_creates_todoist_and_writes_id_back(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-
-    mock_todoist_api = MagicMock()
-    ctx["todoist_client"]._api = mock_todoist_api
+    ctx["task_provider"].create = AsyncMock(return_value="T999")
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
-        patch("app.worker.jobs.create_todoist_task", new_callable=AsyncMock, return_value="T999") as mock_create,
         patch("app.worker.jobs.write_todoist_id_to_zoho", new_callable=AsyncMock) as mock_write_back,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
-    mock_create.assert_called_once()
-    call_args = mock_create.call_args
+    ctx["task_provider"].create.assert_called_once()
+    call_args = ctx["task_provider"].create.call_args
     assert call_args.args[0] == norm
     assert call_args.args[1] == "Z1"
-    assert call_args.args[2] == mock_todoist_api
     assert "description" in call_args.kwargs
 
     mock_write_back.assert_called_once_with("Z1", "T999", "tok")
@@ -241,10 +235,10 @@ async def test_new_task_creates_todoist_and_writes_id_back(complete_env):
     sync_event_rows = [a for a in added if isinstance(a, SyncEvent)]
 
     assert len(sync_state_rows) >= 1
-    assert sync_state_rows[0].todoist_task_id == "T999"
+    assert sync_state_rows[0].external_task_id == "T999"
     assert len(sync_event_rows) >= 1
     assert sync_event_rows[0].action == "sync"
-    assert sync_event_rows[0].detail["direction"] == "zoho_to_todoist"
+    assert sync_event_rows[0].detail["direction"] == "zoho_to_external"
 
 
 # ---------------------------------------------------------------------------
@@ -253,26 +247,25 @@ async def test_new_task_creates_todoist_and_writes_id_back(complete_env):
 
 @pytest.mark.asyncio
 async def test_bootstrap_race_footer_suppressed(complete_env):
-    """LOOP-5: If Todoist hash matches Zoho hash and last_hash, echo_suppressed path taken."""
+    """LOOP-5: If external hash matches Zoho hash and last_hash, echo_suppressed path taken."""
     from app.worker.jobs import sync_task
 
     norm = _norm(title="task", prio=2)
     h = canonical_hash(norm)
 
     state = MagicMock()
-    state.todoist_task_id = "T333"
-    state.last_hash = h  # last_hash == zoho_hash == todoist_hash → echo suppressed
+    state.external_task_id = "T333"
+    state.last_hash = h  # last_hash == zoho_hash == external_hash → echo suppressed
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm)
+    ctx["task_provider"].update = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm),
-        patch("app.worker.jobs.update_todoist_task") as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task") as mock_update_zoho,
         patch("app.worker.jobs.write_todoist_id_to_zoho") as mock_write_back,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
@@ -280,7 +273,7 @@ async def test_bootstrap_race_footer_suppressed(complete_env):
         await sync_task(ctx, "Z1")
 
     # No write to either system
-    mock_update_tod.assert_not_called()
+    ctx["task_provider"].update.assert_not_called()
     mock_update_zoho.assert_not_called()
     mock_write_back.assert_not_called()
 
@@ -295,62 +288,58 @@ async def test_bootstrap_race_footer_suppressed(complete_env):
 
 @pytest.mark.asyncio
 async def test_lww_zoho_wins_when_both_diverge(complete_env):
-    """SYNC-11: When both zoho_hash and todoist_hash differ from last_hash, Zoho wins."""
+    """SYNC-11: When both zoho_hash and external_hash differ from last_hash, Zoho wins."""
     from app.worker.jobs import sync_task
 
     norm_zoho = _norm(title="Zoho version")
-    norm_todoist = _norm(title="Todoist version")
+    norm_external = _norm(title="External version")
     zoho_hash = canonical_hash(norm_zoho)
-    todoist_hash = canonical_hash(norm_todoist)
+    external_hash = canonical_hash(norm_external)
     old_hash = "old_hash_" + "x" * 56
 
     assert zoho_hash != old_hash
-    assert todoist_hash != old_hash
-    assert zoho_hash != todoist_hash
+    assert external_hash != old_hash
+    assert zoho_hash != external_hash
 
     state = MagicMock()
-    state.todoist_task_id = "T444"
+    state.external_task_id = "T444"
     state.last_hash = old_hash
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
-
-    mock_todoist_api = MagicMock()
-    ctx["todoist_client"]._api = mock_todoist_api
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_external)
+    ctx["task_provider"].update = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_zoho),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_todoist),
-        patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
-    # Zoho wins → write to Todoist
-    mock_update_tod.assert_called_once()
+    # Zoho wins → write to external provider
+    ctx["task_provider"].update.assert_called_once()
     mock_update_zoho.assert_not_called()
 
     # state.last_hash set to zoho_hash
     assert state.last_hash == zoho_hash
 
-    # SyncEvent with action='overwrite', direction='zoho_to_todoist'
+    # SyncEvent with action='overwrite', direction='zoho_to_external'
     added_events = [c.args[0] for c in sess.add.call_args_list if hasattr(c.args[0], "action")]
     overwrite_events = [e for e in added_events if e.action == "overwrite"]
     assert len(overwrite_events) >= 1
-    assert overwrite_events[0].detail["direction"] == "zoho_to_todoist"
+    assert overwrite_events[0].detail["direction"] == "zoho_to_external"
 
 
 # ---------------------------------------------------------------------------
-# Test 8: Zoho hash differs → write to Todoist
+# Test 8: Zoho hash differs → write to external provider
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_zoho_hash_differs_writes_to_todoist(complete_env):
-    """When zoho_hash != last_hash and todoist_hash == last_hash, write to Todoist."""
+    """When zoho_hash != last_hash and external_hash == last_hash, write to external provider."""
     from app.worker.jobs import sync_task
 
     norm_old = _norm(title="old")
@@ -361,78 +350,73 @@ async def test_zoho_hash_differs_writes_to_todoist(complete_env):
     assert zoho_hash != old_hash
 
     state = MagicMock()
-    state.todoist_task_id = "T555"
+    state.external_task_id = "T555"
     state.last_hash = old_hash
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
-
-    mock_todoist_api = MagicMock()
-    ctx["todoist_client"]._api = mock_todoist_api
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_old)
+    ctx["task_provider"].update = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_new),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_old),
-        patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
-    mock_update_tod.assert_called_once()
+    ctx["task_provider"].update.assert_called_once()
     mock_update_zoho.assert_not_called()
 
     added_events = [c.args[0] for c in sess.add.call_args_list if hasattr(c.args[0], "action")]
     sync_events = [e for e in added_events if e.action == "sync"]
     assert len(sync_events) >= 1
-    assert sync_events[0].detail["direction"] == "zoho_to_todoist"
+    assert sync_events[0].detail["direction"] == "zoho_to_external"
 
 
 # ---------------------------------------------------------------------------
-# Test 9: Todoist hash differs → write to Zoho
+# Test 9: External-provider hash differs → write to Zoho
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_todoist_hash_differs_writes_to_zoho(complete_env):
-    """When todoist_hash != last_hash and zoho_hash == last_hash, write to Zoho."""
+    """When external_hash != last_hash and zoho_hash == last_hash, write to Zoho."""
     from app.worker.jobs import sync_task
 
     norm_old = _norm(title="old")
-    norm_new_todoist = _norm(title="new from todoist")
+    norm_new_external = _norm(title="new from external")
     old_hash = canonical_hash(norm_old)
-    todoist_hash = canonical_hash(norm_new_todoist)
+    external_hash = canonical_hash(norm_new_external)
 
-    assert todoist_hash != old_hash
+    assert external_hash != old_hash
 
     state = MagicMock()
-    state.todoist_task_id = "T666"
+    state.external_task_id = "T666"
     state.last_hash = old_hash
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_new_external)
+    ctx["task_provider"].update = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_old),  # same as last_hash
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_new_todoist),
-        patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update_tod,
         patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
     mock_update_zoho.assert_called_once()
-    mock_update_tod.assert_not_called()
+    ctx["task_provider"].update.assert_not_called()
 
     added_events = [c.args[0] for c in sess.add.call_args_list if hasattr(c.args[0], "action")]
     sync_events = [e for e in added_events if e.action == "sync"]
     assert len(sync_events) >= 1
-    assert sync_events[0].detail["direction"] == "todoist_to_zoho"
+    assert sync_events[0].detail["direction"] == "external_to_zoho"
 
 
 # ---------------------------------------------------------------------------
@@ -465,12 +449,12 @@ async def test_retry_on_zoho_rate_limit_uses_correct_delay(complete_env):
 
 
 # ---------------------------------------------------------------------------
-# Test 11: Completion routes to complete_todoist_task, not update_todoist_task
+# Test 11: Completion routes to task_provider.complete, not task_provider.update
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_completion_routes_to_complete_not_update(complete_env):
-    """When is_completed=True and writing to Todoist, complete_todoist_task is called."""
+    """When is_completed=True and writing to the external provider, .complete() is called."""
     from app.worker.jobs import sync_task
 
     norm_old = _norm(title="task", done=False)
@@ -481,29 +465,25 @@ async def test_completion_routes_to_complete_not_update(complete_env):
     assert zoho_hash != old_hash
 
     state = MagicMock()
-    state.todoist_task_id = "T777"
+    state.external_task_id = "T777"
     state.last_hash = old_hash
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
-
-    mock_todoist_api = MagicMock()
-    ctx["todoist_client"]._api = mock_todoist_api
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_old)
+    ctx["task_provider"].complete = AsyncMock()
+    ctx["task_provider"].update = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_completed),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_old),
-        patch("app.worker.jobs.complete_todoist_task", new_callable=AsyncMock) as mock_complete,
-        patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock) as mock_update,
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1")
 
-    mock_complete.assert_called_once()
-    mock_update.assert_not_called()
+    ctx["task_provider"].complete.assert_called_once()
+    ctx["task_provider"].update.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -521,13 +501,10 @@ async def test_source_zoho_webhook_recorded_on_new_task(complete_env):
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-
-    mock_todoist_api = MagicMock()
-    ctx["todoist_client"]._api = mock_todoist_api
+    ctx["task_provider"].create = AsyncMock(return_value="T998")
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
-        patch("app.worker.jobs.create_todoist_task", new_callable=AsyncMock, return_value="T998"),
         patch("app.worker.jobs.write_todoist_id_to_zoho", new_callable=AsyncMock),
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
@@ -552,22 +529,18 @@ async def test_source_todoist_webhook_recorded_on_divergent_write(complete_env):
     old_hash = canonical_hash(norm_old)
 
     state = MagicMock()
-    state.todoist_task_id = "T556"
+    state.external_task_id = "T556"
     state.last_hash = old_hash
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
-
-    mock_todoist_api = MagicMock()
-    ctx["todoist_client"]._api = mock_todoist_api
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_old)
+    ctx["task_provider"].update = AsyncMock()
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_new),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm_old),
-        patch("app.worker.jobs.update_todoist_task", new_callable=AsyncMock),
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1", source="todoist_webhook")
@@ -644,7 +617,7 @@ async def test_sync_task_failure_event_on_zoho_not_found(complete_env):
 
 @pytest.mark.asyncio
 async def test_sync_task_failure_event_on_todoist_not_found(complete_env):
-    """TodoistNotFoundError (from fetch_todoist_task) → SyncEvent(action='failed') added, no Retry."""
+    """TodoistNotFoundError (from task_provider.fetch) → SyncEvent(action='failed') added, no Retry."""
     from app.worker.jobs import sync_task
     from app.db.models import SyncEvent
     from app.todoist.client import TodoistNotFoundError
@@ -653,14 +626,14 @@ async def test_sync_task_failure_event_on_todoist_not_found(complete_env):
     old_hash = "old_hash_" + "x" * 56
 
     state = MagicMock()
-    state.todoist_task_id = "T888"
+    state.external_task_id = "T888"
     state.last_hash = old_hash
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx(lock_acquired=True, job_try=1)
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         side_effect=TodoistNotFoundError("todoist task gone")
     )
 
@@ -689,18 +662,17 @@ async def test_source_reconciler_recorded_on_echo_suppressed(complete_env):
     h = canonical_hash(norm)
 
     state = MagicMock()
-    state.todoist_task_id = "T334"
+    state.external_task_id = "T334"
     state.last_hash = h  # both sides match → echo_suppressed
 
     factory, sess = _mock_session_factory_with_state(state)
     ctx = _make_ctx()
     ctx["session_factory"] = factory
     ctx["zoho_client"].get_task = AsyncMock(return_value={})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(return_value={})
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm)
 
     with (
         patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm),
-        patch("app.worker.jobs.todoist_task_to_normalised", return_value=norm),
         patch("app.worker.jobs.token_state", {"access_token": "tok"}),
     ):
         await sync_task(ctx, "Z1", source="reconciler")
