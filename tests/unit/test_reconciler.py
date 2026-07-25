@@ -12,6 +12,7 @@ def _make_reconciler_ctx():
         "session_factory": MagicMock(),
         "zoho_client": AsyncMock(),
         "todoist_client": AsyncMock(),
+        "task_provider": AsyncMock(),
     }
 
 
@@ -468,7 +469,8 @@ def _make_state(zoho_task_id="Z1", todoist_task_id="T1", orphan_check_count=0):
     """Build a SyncState-like mock with explicit attribute assignment."""
     state = MagicMock()
     state.zoho_task_id = zoho_task_id
-    state.todoist_task_id = todoist_task_id
+    state.external_task_id = todoist_task_id
+    state.provider = "todoist"
     state.last_hash = "abc123"
     state.orphan_check_count = orphan_check_count
     return state
@@ -480,8 +482,9 @@ def _healthy_zoho_response(zoho_task_id="Z1", owner_id="test-user-id"):
 
 
 def _healthy_todoist_task(zoho_task_id="Z1"):
+    """A NormalisedTask-shaped mock, matching what task_provider.fetch() now returns."""
     task = MagicMock()
-    task.description = "some content"
+    task.title = "some content"
     return task
 
 
@@ -491,7 +494,6 @@ def _common_orphan_patches(monkeypatch):
     mock_delete_zoho = AsyncMock()
     mock_send_notification = AsyncMock()
     mock_upsert = AsyncMock()
-    monkeypatch.setattr("app.worker.reconciler.delete_todoist_task", mock_delete_todoist)
     monkeypatch.setattr("app.worker.reconciler.delete_zoho_task", mock_delete_zoho)
     monkeypatch.setattr("app.worker.reconciler.send_deletion_notification", mock_send_notification)
     monkeypatch.setattr("app.worker.reconciler.token_state", {"access_token": "fake-token"})
@@ -524,7 +526,7 @@ async def test_orphan_first_cycle(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Must NOT delete anything on first cycle
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # The locked row's orphan_check_count must have been incremented
     assert sess.get.await_count >= 1, "session.get was not called to lock the row"
@@ -547,7 +549,7 @@ async def test_orphan_second_cycle_deletion(complete_env, monkeypatch):
 
     ctx["zoho_client"].get_task = AsyncMock(side_effect=ZohoNotFoundError("not found"))
     # Todoist is healthy (not missing)
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
@@ -555,9 +557,9 @@ async def test_orphan_second_cycle_deletion(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Todoist counterpart must be deleted (Zoho gone → delete Todoist)
-    mock_delete_todoist.assert_called_once()
-    call_args = mock_delete_todoist.call_args
-    assert call_args.args[0] == state.todoist_task_id
+    ctx["task_provider"].delete.assert_called_once()
+    call_args = ctx["task_provider"].delete.call_args
+    assert call_args.args[0] == state.external_task_id
 
     # SyncState row must be deleted
     sess.delete.assert_awaited()
@@ -593,7 +595,7 @@ async def test_orphan_reassignment_detected(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # First cycle: should NOT delete
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get called to increment count
     assert sess.get.await_count >= 1
@@ -619,7 +621,7 @@ async def test_orphan_todoist_missing(complete_env, monkeypatch):
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
     # Todoist is missing
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         side_effect=TodoistNotFoundError("not found")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
@@ -653,14 +655,14 @@ async def test_orphan_count_reset(complete_env, monkeypatch):
     ctx["zoho_client"].get_task = AsyncMock(
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
 
     await orphan_sweep(ctx)
 
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get called to reset count
     assert sess.get.await_count >= 1
@@ -687,7 +689,7 @@ async def test_orphan_zoho_rate_limit_skipped(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Row skipped — no deletes, no count increment (no session.get call to increment)
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get should NOT have been called (no increment/delete)
     sess.get.assert_not_awaited()
@@ -711,14 +713,14 @@ async def test_orphan_todoist_rate_limit_skipped(complete_env, monkeypatch):
     ctx["zoho_client"].get_task = AsyncMock(
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         side_effect=TodoistRateLimitError("rate limited")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
 
     await orphan_sweep(ctx)
 
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     sess.get.assert_not_awaited()
 
@@ -754,7 +756,7 @@ async def test_orphan_sweep_drift_enqueues_sync(complete_env, monkeypatch):
         }]}
     )
     # Todoist is healthy
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
 
@@ -770,7 +772,7 @@ async def test_orphan_sweep_drift_enqueues_sync(complete_env, monkeypatch):
     assert call.kwargs.get("source") == "orphan_drift"
     assert call.kwargs.get("defer_secs") == 0
     # Nothing should be deleted
-    mock_delete_todoist.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
 
 
@@ -804,7 +806,7 @@ async def test_orphan_sweep_healthy_no_drift_no_enqueue(complete_env, monkeypatc
     ctx["session_factory"] = factory
 
     ctx["zoho_client"].get_task = AsyncMock(return_value={"data": [zoho_data]})
-    ctx["todoist_client"].fetch_todoist_task = AsyncMock(
+    ctx["task_provider"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
 
@@ -845,3 +847,179 @@ async def test_orphan_sweep_last_run_updated(complete_env, monkeypatch):
     assert isinstance(ts_value, str)
     parsed = datetime.fromisoformat(ts_value)
     assert parsed.tzinfo is not None  # must be tz-aware (UTC)
+
+
+# ===========================================================================
+# nirvana_poll_sweep tests
+# ===========================================================================
+
+class _FakeSettings:
+    """Minimal stand-in for Settings — nirvana_poll_sweep only reads .task_provider."""
+
+    def __init__(self, task_provider: str) -> None:
+        self.task_provider = task_provider
+
+
+def _make_nirvana_ctx():
+    """Build a minimal arq ctx dict for nirvana_poll_sweep."""
+    mock_redis = AsyncMock()
+    mock_redis.enqueue_job = AsyncMock(return_value=MagicMock())
+    return {
+        "redis": mock_redis,
+        "session_factory": MagicMock(),
+        "task_provider": AsyncMock(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Test 20: task_provider != "nirvana" -> no-op (no get_tasks, no enqueue_sync)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_inactive_noop(complete_env, monkeypatch):
+    """When TASK_PROVIDER != 'nirvana', nirvana_poll_sweep returns immediately
+    without calling get_tasks or enqueue_sync."""
+    from app.worker.reconciler import nirvana_poll_sweep
+
+    ctx = _make_nirvana_ctx()
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("todoist"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+
+    await nirvana_poll_sweep(ctx)
+
+    ctx["task_provider"].get_tasks.assert_not_called()
+    ctx["task_provider"].get_task_counts.assert_not_called()
+    mock_enqueue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 21: nirvana active, hash mismatch against sync_state -> enqueue_sync
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_enqueues_on_hash_mismatch(complete_env, monkeypatch):
+    """Nirvana active: matched sync_state row with a stale hash -> enqueue_sync
+    called with the linked zoho_task_id, source='nirvana_poll'."""
+    from app.worker.reconciler import nirvana_poll_sweep
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": 1})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+        {"id": "N1", "name": "Buy milk", "duedate": "2026-05-01", "state": "next", "starred": False, "completed": None},
+    ])
+
+    state = MagicMock()
+    state.zoho_task_id = "Z1"
+    state.last_hash = "stale_hash_value"
+    factory, sess = _mock_session_factory_with_state(state)
+    ctx["session_factory"] = factory
+
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    mock_upsert = AsyncMock()
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", mock_upsert)
+
+    await nirvana_poll_sweep(ctx)
+
+    mock_enqueue.assert_called_once()
+    call = mock_enqueue.call_args
+    assert call.args[0] is ctx["redis"]
+    assert call.args[1] == "Z1"
+    assert call.kwargs.get("defer_secs") == 0
+    assert call.kwargs.get("source") == "nirvana_poll"
+
+
+# ---------------------------------------------------------------------------
+# Test 22: nirvana active, no matching sync_state row -> skipped, not enqueued
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_unmatched_task_skipped(complete_env, monkeypatch):
+    """A raw Nirvana task with no matching sync_state row is skipped, not enqueued
+    (mirrors reconcile_todoist_not_in_sync_state's philosophy)."""
+    from app.worker.reconciler import nirvana_poll_sweep
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": 1})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+        {"id": "N-native", "name": "Native nirvana task", "duedate": None, "state": "next", "starred": False, "completed": None},
+    ])
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    mock_enqueue = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", mock_enqueue)
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
+
+    await nirvana_poll_sweep(ctx)
+
+    mock_enqueue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 23: 200-item cap hit -> warning logged
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_cap_hit_warning(complete_env, monkeypatch):
+    """When get_tasks returns exactly NIRVANA_POLL_LIMIT items, a
+    'nirvana_poll_sweep_cap_hit' warning is logged."""
+    from app.worker.reconciler import nirvana_poll_sweep, NIRVANA_POLL_LIMIT
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": NIRVANA_POLL_LIMIT})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+        {"id": f"N{i}", "name": f"Task {i}", "duedate": None, "state": "next", "starred": False, "completed": None}
+        for i in range(NIRVANA_POLL_LIMIT)
+    ])
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    mock_log = MagicMock()
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", AsyncMock())
+    monkeypatch.setattr("app.worker.reconciler.log", mock_log)
+
+    await nirvana_poll_sweep(ctx)
+
+    warning_events = [c.args[0] for c in mock_log.warning.call_args_list]
+    assert "nirvana_poll_sweep_cap_hit" in warning_events
+
+
+# ---------------------------------------------------------------------------
+# Test 24: nirvana_poll_sweep_last_run upserted with ISO timestamp
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_poll_sweep_last_run_updated(complete_env, monkeypatch):
+    """At end of sweep (when active), upsert_kv called with
+    'nirvana_poll_sweep_last_run' and an ISO-8601 tz-aware timestamp."""
+    from datetime import datetime
+    from app.worker.reconciler import nirvana_poll_sweep, KV_NIRVANA_POLL_LAST_RUN
+
+    ctx = _make_nirvana_ctx()
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={})
+    ctx["task_provider"].get_tasks = AsyncMock(return_value=[])
+
+    factory, sess = _mock_session_factory_with_state(None)
+    ctx["session_factory"] = factory
+
+    mock_upsert = AsyncMock()
+    monkeypatch.setattr("app.worker.reconciler.get_settings", lambda: _FakeSettings("nirvana"))
+    monkeypatch.setattr("app.worker.reconciler.enqueue_sync", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("app.worker.reconciler.upsert_kv", mock_upsert)
+
+    await nirvana_poll_sweep(ctx)
+
+    assert mock_upsert.call_count == 1
+    call_args = mock_upsert.call_args
+    assert call_args.args[1] == KV_NIRVANA_POLL_LAST_RUN
+    ts_value = call_args.args[2]
+    parsed = datetime.fromisoformat(ts_value)
+    assert parsed.tzinfo is not None
