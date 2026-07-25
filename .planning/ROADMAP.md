@@ -35,8 +35,8 @@ Plans:
 - [x] 09-02-PLAN.md — sync_state schema: rename todoist_task_id -> external_task_id, add provider column (migration + backfill)
 - [x] 09-03-PLAN.md — app/nirvana/ package: NirvanaClient, writer functions, normalise
 - [x] 09-04-PLAN.md — TaskProvider Protocol + get_provider() factory; TodoistClient Protocol conformance
-- [ ] 09-05-PLAN.md — Rewire worker jobs, Todoist webhook route, and app/main.py through TaskProvider
-- [ ] 09-06-PLAN.md — Generalize orphan_sweep to TaskProvider; add nirvana_poll_sweep cron function
+- [x] 09-05-PLAN.md — Rewire worker jobs, Todoist webhook route, and app/main.py through TaskProvider
+- [x] 09-06-PLAN.md — Generalize orphan_sweep to TaskProvider; add nirvana_poll_sweep cron function
 - [ ] 09-07-PLAN.md — Wire arq worker settings (on_startup/on_shutdown/cron_jobs) through TaskProvider and register nirvana_poll_sweep
 
 ## Progress
