@@ -49,11 +49,16 @@ class TodoistClient:
         await self._api.close()
 
     async def fetch_todoist_task(self, todoist_task_id: str) -> Task:
-        """Fetch a single Todoist task. Raises typed exceptions on non-2xx."""
+        """Fetch a single Todoist task. Raises typed exceptions on non-2xx
+        or on a transient transport error (connection/timeout), so both
+        flow through the same retry-with-backoff path in app/worker/jobs.py.
+        """
         try:
             task = await self._api.get_task(todoist_task_id)
         except httpx.HTTPStatusError as exc:
             self._raise_typed(exc.response.status_code, f"GET task {todoist_task_id}", exc)
+        except httpx.HTTPError as exc:
+            raise TodoistAPIError(f"transport error — GET task {todoist_task_id}: {exc}") from exc
         log.info("todoist_fetch_task", todoist_id=todoist_task_id)
         return task
 
@@ -81,15 +86,18 @@ class TodoistClient:
         Raises TodoistAuthError (401), TodoistRateLimitError (429),
         TodoistAPIError (other non-2xx).
         """
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                SYNC_API_URL,
-                headers={"Authorization": f"Bearer {self._api_token}"},
-                data={
-                    "sync_token": sync_token,
-                    "resource_types": '["items"]',
-                },
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    SYNC_API_URL,
+                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    data={
+                        "sync_token": sync_token,
+                        "resource_types": '["items"]',
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise TodoistAPIError(f"transport error — Sync API: {exc}") from exc
         if resp.status_code == 401:
             raise TodoistAuthError("401 Unauthorized — Sync API")
         if resp.status_code == 429:
