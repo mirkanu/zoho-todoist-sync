@@ -63,7 +63,8 @@ class NirvanaClient:
         if not body.get("ok", False):
             raise NirvanaAPIError(f"tool {tool} returned ok=false: {body}")
         log.info("nirvana_tool_call", tool=tool)
-        return body.get("result") or {}
+        result = body.get("result")
+        return result if result is not None else {}
 
     async def get_tasks(self, **filters: Any) -> list[dict[str, Any]]:
         result = await self.call_tool("get_tasks", filters)
