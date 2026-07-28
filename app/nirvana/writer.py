@@ -12,18 +12,30 @@ from app.core.notifications import send_deletion_notification
 
 log = get_logger(__name__)
 
+# Every Zoho-origin Nirvana task always carries these two tags (2026-07-28
+# decision): "Expo" is a pre-existing area tag shared with non-Zoho tasks,
+# so "Zoho" is the actual unique source marker used to identify sync-origin
+# tasks inside the Nirvana app.
+BASE_TAGS: tuple[str, ...] = ("Expo", "Zoho")
+
 
 async def create_nirvana_task(
     normalised: NormalisedTask,
     zoho_task_id: str,
     client: "NirvanaClient",
     note: str | None = None,
+    state: str = "inbox",
+    extra_tags: list[str] | None = None,
 ) -> str:
     """Create a Nirvana task. Returns new task ID as a string.
 
-    Always created into state="inbox", unstarred — Zoho priority is ignored
-    entirely (2026-07-28 decision: the user doesn't use Zoho task priority).
-    `note` (if provided) becomes the Nirvana task's visible note/description,
+    Ongoing sync always calls this with defaults: state="inbox", unstarred —
+    Zoho priority is ignored entirely (2026-07-28 decision: the user doesn't
+    use Zoho task priority). `state`/`extra_tags` overrides exist only for
+    scripts/migrate_todoist_labels_to_nirvana.py, which translates historical
+    Todoist labels (e.g. "Deferred" -> state="scheduled"/"someday") for the
+    one-off Todoist->Nirvana cutover — the ongoing pipeline never overrides
+    these. `note` (if provided) becomes the Nirvana task's visible note/description,
     built by app.nirvana.description.build_task_note — set only at creation,
     never touched on update (mirrors Todoist's DESC-5 rule).
 
@@ -36,7 +48,12 @@ async def create_nirvana_task(
     """
     from app.nirvana.client import NirvanaAPIError  # lazy import — avoids circularity
 
-    item: dict = {"name": normalised.title, "state": "inbox", "starred": False}
+    tags = list(BASE_TAGS)
+    for t in (extra_tags or []):
+        if t not in tags:
+            tags.append(t)
+
+    item: dict = {"name": normalised.title, "state": state, "starred": False, "tags": tags}
     if normalised.due_date is not None:
         item["duedate"] = normalised.due_date
     if note is not None:

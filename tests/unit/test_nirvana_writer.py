@@ -25,7 +25,53 @@ async def test_create_nirvana_task_always_inbox_unstarred_ignoring_priority(comp
 
     assert result == "N1"
     items = mock_client.create_tasks.call_args.args[0]
-    assert items == [{"name": "Buy milk", "state": "inbox", "starred": False, "duedate": "2026-08-01"}]
+    assert items == [{
+        "name": "Buy milk", "state": "inbox", "starred": False,
+        "tags": ["Expo", "Zoho"], "duedate": "2026-08-01",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_create_nirvana_task_always_includes_base_tags(complete_env):
+    """2026-07-28 decision: every Zoho-origin task gets Expo + Zoho tags,
+    unconditionally — Zoho is the unique source marker since Expo alone is
+    shared with many non-Zoho tasks."""
+    mock_client = AsyncMock()
+    mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
+
+    normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
+    await create_nirvana_task(normalised, zoho_task_id="Z1", client=mock_client)
+
+    items = mock_client.create_tasks.call_args.args[0]
+    assert items[0]["tags"] == ["Expo", "Zoho"]
+
+
+@pytest.mark.asyncio
+async def test_create_nirvana_task_extra_tags_appended_without_duplicating_base(complete_env):
+    mock_client = AsyncMock()
+    mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
+
+    normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
+    await create_nirvana_task(
+        normalised, zoho_task_id="Z1", client=mock_client,
+        extra_tags=["Other Contacts", "Expo"],  # "Expo" duplicate must not repeat
+    )
+
+    items = mock_client.create_tasks.call_args.args[0]
+    assert items[0]["tags"] == ["Expo", "Zoho", "Other Contacts"]
+
+
+@pytest.mark.asyncio
+async def test_create_nirvana_task_state_override_for_migration(complete_env):
+    """Migration-script-only override — ongoing sync never passes state."""
+    mock_client = AsyncMock()
+    mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
+
+    normalised = NormalisedTask(title="t", due_date="2026-09-01", priority=1, is_completed=False)
+    await create_nirvana_task(normalised, zoho_task_id="Z1", client=mock_client, state="scheduled")
+
+    items = mock_client.create_tasks.call_args.args[0]
+    assert items[0]["state"] == "scheduled"
 
 
 @pytest.mark.asyncio
