@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     todoist_client_secret: str
     task_provider: str = "todoist"
     nirvana_pat: str
-    nirvana_poll_interval_secs: int = 3600
     resend_api_key: str
     resend_sender_email: str = "sync-alerts@resend.dev"
     database_url: str

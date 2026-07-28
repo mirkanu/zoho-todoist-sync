@@ -110,8 +110,8 @@ async def lifespan(app: FastAPI):
     task_provider = get_provider(settings)
     try:
         # startup_sync is Todoist's Sync-API-token warm-up; Nirvana has no equivalent
-        # concept (D-09: it relies on the poll cron picking up drift within
-        # NIRVANA_POLL_INTERVAL_SECS instead of a startup delta fetch).
+        # concept (D-09: it relies on the 15-min poll cron picking up drift instead
+        # of a startup delta fetch).
         if settings.task_provider == "todoist":
             await startup_sync(task_provider, session_factory, settings)
     except Exception:

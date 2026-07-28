@@ -75,12 +75,6 @@ def test_task_provider_default(complete_env):
     assert s.task_provider == "todoist"
 
 
-def test_nirvana_poll_interval_secs_default(complete_env):
-    from app.core.config import Settings
-    s = Settings()
-    assert s.nirvana_poll_interval_secs == 3600
-
-
 def test_terminal_statuses_list_single():
     from app.core.config import Settings
     s = Settings.model_construct(zoho_terminal_statuses="Completed")
