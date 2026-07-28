@@ -9,7 +9,6 @@ from __future__ import annotations
 from app.core.logging import get_logger
 from app.core.normalise import NormalisedTask
 from app.core.notifications import send_deletion_notification
-from app.core.priority import todoist_priority_to_nirvana
 
 log = get_logger(__name__)
 
@@ -18,8 +17,15 @@ async def create_nirvana_task(
     normalised: NormalisedTask,
     zoho_task_id: str,
     client: "NirvanaClient",
+    note: str | None = None,
 ) -> str:
     """Create a Nirvana task. Returns new task ID as a string.
+
+    Always created into state="inbox", unstarred — Zoho priority is ignored
+    entirely (2026-07-28 decision: the user doesn't use Zoho task priority).
+    `note` (if provided) becomes the Nirvana task's visible note/description,
+    built by app.nirvana.description.build_task_note — set only at creation,
+    never touched on update (mirrors Todoist's DESC-5 rule).
 
     NOTE: create_tasks' real result shape is confirmed against a live call in
     Plan 09-07 Task 2: `{"ok": true, "tasks": [{"id": ..., ...}], "count": 1}`
@@ -30,10 +36,11 @@ async def create_nirvana_task(
     """
     from app.nirvana.client import NirvanaAPIError  # lazy import — avoids circularity
 
-    state, starred = todoist_priority_to_nirvana(normalised.priority)
-    item: dict = {"name": normalised.title, "state": state, "starred": starred}
+    item: dict = {"name": normalised.title, "state": "inbox", "starred": False}
     if normalised.due_date is not None:
         item["duedate"] = normalised.due_date
+    if note is not None:
+        item["note"] = note
 
     result = await client.create_tasks([item])
     created = _extract_created_items(result)
@@ -61,13 +68,17 @@ async def update_nirvana_task(
     normalised: NormalisedTask,
     client: "NirvanaClient",
 ) -> None:
-    """Update name/state/starred/duedate. Confirmed live in Plan 09-07 Task 2:
-    sending `duedate: ""` clears Nirvana's due date (the field disappears from
-    a subsequent get_tasks read, versus the prior real date value) — so when
-    normalised.due_date is None, this sends `"duedate": ""` to clear it rather
-    than omitting the key."""
-    state, starred = todoist_priority_to_nirvana(normalised.priority)
-    update: dict = {"id": external_id, "name": normalised.title, "state": state, "starred": starred}
+    """Update name/duedate only. Never sends state/starred (2026-07-28 decision):
+    once a task lands in Nirvana's inbox, its GTD state/star is fully
+    user-owned — the sync must never move it or re-star it based on Zoho
+    priority, since priority is a non-signal for Nirvana.
+
+    Confirmed live in Plan 09-07 Task 2: sending `duedate: ""` clears
+    Nirvana's due date (the field disappears from a subsequent get_tasks
+    read, versus the prior real date value) — so when normalised.due_date
+    is None, this sends `"duedate": ""` to clear it rather than omitting
+    the key."""
+    update: dict = {"id": external_id, "name": normalised.title}
     update["duedate"] = normalised.due_date if normalised.due_date is not None else ""
     await client.update_tasks([update])
     log.info("nirvana_task_updated", nirvana_id=external_id)

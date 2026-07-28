@@ -101,13 +101,13 @@ class NirvanaClient:
         raise NirvanaNotFoundError(f"404 Not Found — task {external_id} not in get_tasks() scan")
 
     async def create(self, normalised: Any, zoho_task_id: str, description: str | None = None) -> str:
-        # description intentionally ignored: Nirvana has no description field,
-        # and description sync stays out of scope for Nirvana per CONTEXT.md.
-        # Parameter exists only so this method's signature matches
+        # description becomes the Nirvana task's `note` field (2026-07-28
+        # decision) — built by app.nirvana.description.build_task_note and
+        # passed through here so this method's signature still matches
         # TodoistClient.create()'s, satisfying the shared TaskProvider Protocol.
         from app.nirvana.writer import create_nirvana_task
 
-        return await create_nirvana_task(normalised, zoho_task_id, self)
+        return await create_nirvana_task(normalised, zoho_task_id, self, note=description)
 
     async def update(self, external_id: str, normalised: Any) -> None:
         from app.nirvana.writer import update_nirvana_task

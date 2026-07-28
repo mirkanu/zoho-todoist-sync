@@ -6,15 +6,22 @@ def test_normalise_basic_with_duedate():
     result = nirvana_task_to_normalised(task)
     assert result.title == "Buy milk"
     assert result.due_date == "2026-08-01"
-    assert result.priority == 3
     assert result.is_completed is False
 
 
-def test_normalise_no_duedate_key_starred_wins():
+def test_normalise_no_duedate_key():
     task = {"name": "X", "state": "next", "starred": True}
     result = nirvana_task_to_normalised(task)
     assert result.due_date is None
-    assert result.priority == 4
+
+
+def test_normalise_priority_is_a_placeholder_always_overridden_by_caller():
+    """2026-07-28 decision: Nirvana has no priority mapping. The value here
+    is always replaced by app.worker.jobs._execute_sync with zoho_norm.priority
+    before hashing — see that module's docstring/comment for why."""
+    task = {"name": "X", "state": "next", "starred": True}
+    result = nirvana_task_to_normalised(task)
+    assert isinstance(result.priority, int)
 
 
 def test_normalise_completed_date_string_is_true():
@@ -45,4 +52,4 @@ def test_normalise_never_reads_startdate():
 def test_normalise_unknown_state_does_not_raise():
     task = {"name": "X", "state": "recurring", "starred": False}
     result = nirvana_task_to_normalised(task)
-    assert result.priority == 1
+    assert isinstance(result.priority, int)

@@ -13,7 +13,10 @@ from app.core.normalise import NormalisedTask
 
 
 @pytest.mark.asyncio
-async def test_create_nirvana_task_sends_state_starred_duedate(complete_env):
+async def test_create_nirvana_task_always_inbox_unstarred_ignoring_priority(complete_env):
+    """2026-07-28 decision: Zoho priority is ignored entirely for Nirvana —
+    every created task lands in state=inbox, unstarred, regardless of the
+    normalised priority value."""
     mock_client = AsyncMock()
     mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
 
@@ -22,7 +25,31 @@ async def test_create_nirvana_task_sends_state_starred_duedate(complete_env):
 
     assert result == "N1"
     items = mock_client.create_tasks.call_args.args[0]
-    assert items == [{"name": "Buy milk", "state": "next", "starred": True, "duedate": "2026-08-01"}]
+    assert items == [{"name": "Buy milk", "state": "inbox", "starred": False, "duedate": "2026-08-01"}]
+
+
+@pytest.mark.asyncio
+async def test_create_nirvana_task_includes_note_when_provided(complete_env):
+    mock_client = AsyncMock()
+    mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
+
+    normalised = NormalisedTask(title="Buy milk", due_date=None, priority=1, is_completed=False)
+    await create_nirvana_task(normalised, zoho_task_id="Z1", client=mock_client, note="[Deal](url)")
+
+    items = mock_client.create_tasks.call_args.args[0]
+    assert items[0]["note"] == "[Deal](url)"
+
+
+@pytest.mark.asyncio
+async def test_create_nirvana_task_omits_note_when_none(complete_env):
+    mock_client = AsyncMock()
+    mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
+
+    normalised = NormalisedTask(title="Buy milk", due_date=None, priority=1, is_completed=False)
+    await create_nirvana_task(normalised, zoho_task_id="Z1", client=mock_client)
+
+    items = mock_client.create_tasks.call_args.args[0]
+    assert "note" not in items[0]
 
 
 @pytest.mark.asyncio
@@ -71,6 +98,8 @@ async def test_create_nirvana_task_unparseable_result_raises(complete_env):
 
 @pytest.mark.asyncio
 async def test_update_nirvana_task_includes_duedate_when_present(complete_env):
+    """2026-07-28 decision: update never sends state/starred — Nirvana's GTD
+    state/star is fully user-owned once a task lands in the inbox."""
     mock_client = AsyncMock()
     mock_client.update_tasks = AsyncMock(return_value={})
 
@@ -78,7 +107,9 @@ async def test_update_nirvana_task_includes_duedate_when_present(complete_env):
     await update_nirvana_task("N1", normalised, client=mock_client)
 
     updates = mock_client.update_tasks.call_args.args[0]
-    assert updates == [{"id": "N1", "name": "Updated", "state": "next", "starred": False, "duedate": "2026-09-01"}]
+    assert updates == [{"id": "N1", "name": "Updated", "duedate": "2026-09-01"}]
+    assert "state" not in updates[0]
+    assert "starred" not in updates[0]
 
 
 @pytest.mark.asyncio

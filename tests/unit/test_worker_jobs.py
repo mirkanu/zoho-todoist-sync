@@ -683,3 +683,92 @@ async def test_source_reconciler_recorded_on_echo_suppressed(complete_env):
     ]
     assert len(added_events) >= 1
     assert all(e.source == "reconciler" for e in added_events)
+
+
+# ---------------------------------------------------------------------------
+# Test 18: Nirvana rows neutralise priority — a bare Nirvana-side priority
+# mismatch (from the user reorganising GTD state in the app) must NOT be
+# treated as a divergence, and must never overwrite Zoho or Nirvana.
+# (2026-07-28 decision: Zoho task priority is ignored for Nirvana.)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nirvana_provider_priority_mismatch_does_not_trigger_write(complete_env):
+    """Zoho priority=1, Nirvana-derived priority=4 (e.g. user starred the task
+    in the Nirvana app) — after neutralisation both hashes must match
+    last_hash (echo_suppressed), not diverge into an overwrite/sync write."""
+    from app.worker.jobs import sync_task
+
+    norm_zoho = _norm(title="same title", prio=1, done=False)
+    # external_norm as returned by task_provider.fetch() — priority differs
+    # (this is what Nirvana's placeholder/derived priority might look like
+    # before neutralisation; jobs.py must replace it with zoho_norm.priority).
+    norm_external_raw = _norm(title="same title", prio=4, done=False)
+
+    last_hash = canonical_hash(norm_zoho)  # persisted from a prior sync
+
+    state = MagicMock()
+    state.external_task_id = "N123"
+    state.provider = "nirvana"
+    state.last_hash = last_hash
+
+    factory, sess = _mock_session_factory_with_state(state)
+    ctx = _make_ctx()
+    ctx["session_factory"] = factory
+    ctx["zoho_client"].get_task = AsyncMock(return_value={})
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_external_raw)
+    ctx["task_provider"].update = AsyncMock()
+    ctx["task_provider"].complete = AsyncMock()
+
+    with (
+        patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_zoho),
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+        patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
+        patch("app.worker.jobs.complete_zoho_task", new_callable=AsyncMock) as mock_complete_zoho,
+    ):
+        await sync_task(ctx, "Z1")
+
+    # Neither side should be written to — priority-only divergence must be neutralised.
+    ctx["task_provider"].update.assert_not_called()
+    ctx["task_provider"].complete.assert_not_called()
+    mock_update_zoho.assert_not_called()
+    mock_complete_zoho.assert_not_called()
+
+    added_events = [c.args[0] for c in sess.add.call_args_list if hasattr(c.args[0], "action")]
+    assert any(e.action == "echo_suppressed" for e in added_events)
+
+
+@pytest.mark.asyncio
+async def test_todoist_provider_priority_mismatch_still_triggers_write(complete_env):
+    """Regression guard: the priority-neutralisation only applies to Nirvana
+    rows (state.provider == "nirvana"). Todoist rows must keep comparing
+    priority as before — a real priority change should still sync."""
+    from app.worker.jobs import sync_task
+
+    norm_zoho = _norm(title="same title", prio=1, done=False)
+    norm_external = _norm(title="same title", prio=4, done=False)
+    last_hash = canonical_hash(norm_zoho)
+
+    state = MagicMock()
+    state.external_task_id = "T123"
+    state.provider = "todoist"
+    state.last_hash = last_hash
+
+    factory, sess = _mock_session_factory_with_state(state)
+    ctx = _make_ctx()
+    ctx["session_factory"] = factory
+    ctx["zoho_client"].get_task = AsyncMock(return_value={})
+    ctx["task_provider"].fetch = AsyncMock(return_value=norm_external)
+    ctx["task_provider"].update = AsyncMock()
+
+    with (
+        patch("app.worker.jobs.zoho_record_to_normalised", return_value=norm_zoho),
+        patch("app.worker.jobs.token_state", {"access_token": "tok"}),
+        patch("app.worker.jobs.update_zoho_task", new_callable=AsyncMock) as mock_update_zoho,
+    ):
+        await sync_task(ctx, "Z1")
+
+    # external_hash != last_hash (priority differs, un-neutralised for Todoist)
+    # and zoho_hash == last_hash → sync direction external_to_zoho.
+    mock_update_zoho.assert_called_once()
+    ctx["task_provider"].update.assert_not_called()

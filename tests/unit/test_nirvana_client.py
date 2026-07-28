@@ -199,7 +199,6 @@ async def test_fetch_returns_normalised_task(httpx_mock):
     assert isinstance(result, NormalisedTask)
     assert result.title == "Buy milk"
     assert result.due_date == "2026-08-01"
-    assert result.priority == 4
     await client.close()
 
 
@@ -218,11 +217,12 @@ async def test_fetch_missing_id_raises_not_found(httpx_mock):
 
 @pytest.mark.asyncio
 async def test_create_delegates_to_create_nirvana_task_and_accepts_description():
+    """description becomes the Nirvana task's note (2026-07-28 decision)."""
     client = NirvanaClient(pat="pat")
     normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
     with patch("app.nirvana.writer.create_nirvana_task", new=AsyncMock(return_value="N9")) as mocked:
         result = await client.create(normalised, "Z1", description="x")
-    mocked.assert_awaited_once_with(normalised, "Z1", client)
+    mocked.assert_awaited_once_with(normalised, "Z1", client, note="x")
     assert result == "N9"
 
 

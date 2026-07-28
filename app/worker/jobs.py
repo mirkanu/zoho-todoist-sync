@@ -19,6 +19,7 @@ webhook/poll-detected echo is suppressed by the echo_suppressed path (hash match
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -191,6 +192,14 @@ async def _execute_sync(
     # returns a NormalisedTask — no separate *_to_normalised() call needed.
     external_norm = await task_provider.fetch(state.external_task_id)
 
+    # Nirvana has no priority mapping (2026-07-28 decision) — Zoho priority
+    # is unused/ignored, and Nirvana's GTD state/star is fully user-owned.
+    # Neutralise priority as a hash component for Nirvana rows so it can
+    # never cause a spurious divergence/overwrite, or get written back to
+    # Zoho, purely because the user reorganised the task inside Nirvana.
+    if state.provider == "nirvana":
+        external_norm = replace(external_norm, priority=zoho_norm.priority)
+
     # [4] Compute canonical hashes.
     zoho_hash = canonical_hash(zoho_norm)
     external_hash = canonical_hash(external_norm)
@@ -275,6 +284,24 @@ async def _apply_write(
             await update_zoho_task(zoho_task_id, target_norm, access_token)
 
 
+def _build_description_for_active_provider(zoho_task_id: str, zoho_record: dict) -> str:
+    """Build the create-time description/note text for whichever provider is
+    currently active. Todoist and Nirvana have different conventions
+    (Todoist: single link, borrows related-record name as link text;
+    Nirvana: separate links to the related record — any module, via
+    $se_module — and the Zoho Task itself, see app.nirvana.description)."""
+    settings = get_settings()
+    if settings.task_provider == "nirvana":
+        from app.nirvana.description import build_task_note
+
+        return build_task_note(zoho_task_id, zoho_record)
+
+    from app.todoist.description import build_task_description, _extract_related_to_name
+
+    related_to_name = _extract_related_to_name(zoho_record)
+    return build_task_description(zoho_task_id, related_to_name)
+
+
 async def _handle_new_task(
     zoho_task_id: str,
     zoho_record: dict,              # raw record for What_Id extraction (DESC-1)
@@ -287,8 +314,6 @@ async def _handle_new_task(
     then create a new task if none exists. Prevents duplicates when a previous run
     created the external-provider task but crashed before persisting sync_state.
     """
-    from app.todoist.description import build_task_description, _extract_related_to_name
-
     # Guard: if Zoho already records an external task ID, try to link it rather
     # than blindly creating another. This handles crash-between-create-and-persist.
     field_api_name = zoho_field_cache.get("todoist_task_id_api_name") or "Todoist_Task_ID"
@@ -329,8 +354,7 @@ async def _handle_new_task(
                 todoist_id=existing_external_id,
             )
 
-    related_to_name = _extract_related_to_name(zoho_record)
-    description = build_task_description(zoho_task_id, related_to_name)
+    description = _build_description_for_active_provider(zoho_task_id, zoho_record)
     external_id = await task_provider.create(zoho_norm, zoho_task_id, description=description)
     # Persist sync_state BEFORE writing back to Zoho. This means a Zoho write failure
     # causes a retry that takes the update path (sync_state found) rather than creating
