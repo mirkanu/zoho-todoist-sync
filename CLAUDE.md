@@ -109,3 +109,17 @@ LOG_LEVEL=INFO
 5. Todoist Sync API project filtering (server-side or client-side?)
 6. arq cron `"*/15 * * * *"` syntax support in pinned version
 7. Zoho `criteria` parameter syntax for v6 API `Modified_Time` filter
+
+<!-- Stack (auto-managed by GSD Dashboard — do not edit manually) -->
+## Stack (auto-managed)
+
+| Service | Key / Reference | Purpose |
+|---------|-----------------|---------|
+| Umami | `ZOHO-TODOIST-SYNC_UMAMI_WEBSITE_ID` | Analytics (umami.gsdlabs.dev) |
+| BetterStack | monitor: `gsd-zoho-todoist-sync` | Uptime monitoring |
+| Cloudflare R2 | bucket: `gsd-zoho-todoist-sync` | Storage |
+| Sentry | `ZOHO-TODOIST-SYNC_SENTRY_DSN` | Error tracking (sentry.io) |
+| Telegram | `POST http://localhost:4820/api/services/telegram/send-file` | File push to owner's Telegram |
+
+*Last updated: 2026-07-25T09:16:34.323Z — updated automatically on each stage transition.*
+<!-- /Stack -->
