@@ -5,7 +5,7 @@ Startup pattern mirrors app/main.py lifespan:
   2. Build SQLAlchemy engine + async_sessionmaker.
   3. Load Zoho access token from kv_store; refresh if missing/expired; upsert.
   4. Publish token into shared token_state dict (app.zoho.state).
-  5. Instantiate ZohoClient + TodoistClient; stash in ctx.
+  5. Instantiate ZohoClient + TaskProvider (get_provider); stash in ctx.
   6. Launch proactive_refresh_loop as a background asyncio task so the
      in-memory Zoho token stays fresh for the lifetime of the worker
      (resolves RESEARCH.md Open Q1 / Pitfall 7).
@@ -29,10 +29,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
-from app.todoist.client import TodoistClient
+from app.providers.base import get_provider
 from app.worker.daily_summary import daily_summary
 from app.worker.jobs import sync_task
-from app.worker.reconciler import orphan_sweep, reconcile_sweep, renew_zoho_webhook
+from app.worker.reconciler import (
+    nirvana_poll_sweep,
+    orphan_sweep,
+    reconcile_sweep,
+    renew_zoho_webhook,
+)
 from app.zoho.client import ZohoClient
 from app.zoho.state import token_state, zoho_field_cache
 from app.zoho.token_manager import (
@@ -86,7 +91,7 @@ async def on_startup(ctx: dict) -> None:
 
     zoho_client = ZohoClient(access_token=access_token)
     ctx["zoho_client"] = zoho_client
-    ctx["todoist_client"] = TodoistClient(api_token=settings.todoist_api_token)
+    ctx["task_provider"] = get_provider(settings)
 
     meta = await zoho_client.get_fields_metadata("Tasks")
     zoho_field_cache["todoist_task_id_api_name"] = meta["todoist_task_id_api_name"]
@@ -112,9 +117,9 @@ async def on_shutdown(ctx: dict) -> None:
         except Exception:
             # Don't let a refresh-loop error block graceful shutdown.
             log.warning("worker_refresh_task_shutdown_error", exc_info=True)
-    todoist_client = ctx.get("todoist_client")
-    if todoist_client is not None:
-        await todoist_client.close()
+    task_provider = ctx.get("task_provider")
+    if task_provider is not None:
+        await task_provider.close()
     engine = ctx.get("engine")
     if engine is not None:
         await engine.dispose()
@@ -129,6 +134,7 @@ class WorkerSettings:
         cron(orphan_sweep,        minute={0},             second=0, timeout=600),
         cron(daily_summary,       hour={0}, minute={0},   second=0, timeout=120),
         cron(renew_zoho_webhook,  minute={0, 45},         second=0, timeout=30),
+        cron(nirvana_poll_sweep,  minute={0, 15, 30, 45}, second=0, timeout=300),
     ]
     on_startup = on_startup
     on_shutdown = on_shutdown

@@ -113,7 +113,7 @@ async def test_on_startup_populates_ctx(complete_env):
          patch("app.worker.settings.refresh_access_token", new_callable=AsyncMock, return_value=("new_tok", future_dt)), \
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
          patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client), \
-         patch("app.worker.settings.TodoistClient"), \
+         patch("app.worker.settings.get_provider"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", return_value=fake_refresh_loop_coro(None, None)), \
          patch("app.worker.settings.asyncio.create_task", return_value=refresh_task_mock) as mock_create_task:
@@ -124,7 +124,7 @@ async def test_on_startup_populates_ctx(complete_env):
     assert "session_factory" in ctx
     assert "engine" in ctx
     assert "zoho_client" in ctx
-    assert "todoist_client" in ctx
+    assert "task_provider" in ctx
     assert ctx["_refresh_task"] is refresh_task_mock
     mock_create_task.assert_called_once()
 
@@ -166,7 +166,7 @@ async def test_on_startup_launches_proactive_refresh_loop(complete_env):
          patch("app.worker.settings.refresh_access_token", new_callable=AsyncMock, return_value=("new_tok", future_dt)), \
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
          patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client2), \
-         patch("app.worker.settings.TodoistClient"), \
+         patch("app.worker.settings.get_provider"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", mock_loop), \
          patch("app.worker.settings.asyncio.create_task", return_value=refresh_task_mock) as mock_create_task:
@@ -204,20 +204,20 @@ async def test_on_shutdown_cancels_refresh_task_and_closes_clients(complete_env)
             yield  # make it a generator (unreachable but required for syntax)
 
     refresh_task = FakeTask()
-    todoist_client = AsyncMock()
+    task_provider = AsyncMock()
     engine = MagicMock()
     engine.dispose = AsyncMock()
 
     ctx = {
         "_refresh_task": refresh_task,
-        "todoist_client": todoist_client,
+        "task_provider": task_provider,
         "engine": engine,
     }
 
     await on_shutdown(ctx)
 
     assert cancel_called, "refresh_task.cancel() was not called"
-    todoist_client.close.assert_awaited_once()
+    task_provider.close.assert_awaited_once()
     engine.dispose.assert_awaited_once()
 
 
@@ -233,12 +233,12 @@ async def test_on_shutdown_tolerates_missing_refresh_task(complete_env):
     importlib.reload(ws_mod)
     from app.worker.settings import on_shutdown
 
-    todoist_client = AsyncMock()
+    task_provider = AsyncMock()
     engine = MagicMock()
     engine.dispose = AsyncMock()
 
     ctx = {
-        "todoist_client": todoist_client,
+        "task_provider": task_provider,
         "engine": engine,
         # no _refresh_task
     }
@@ -246,7 +246,7 @@ async def test_on_shutdown_tolerates_missing_refresh_task(complete_env):
     # Must not raise
     await on_shutdown(ctx)
 
-    todoist_client.close.assert_awaited_once()
+    task_provider.close.assert_awaited_once()
     engine.dispose.assert_awaited_once()
 
 
@@ -330,22 +330,24 @@ def test_main_module_calls_run_worker(complete_env):
 # ---------------------------------------------------------------------------
 
 def test_cron_jobs_registered(complete_env):
-    """WorkerSettings.cron_jobs has 4 entries: reconcile_sweep, orphan_sweep, daily_summary, renew_zoho_webhook."""
+    """WorkerSettings.cron_jobs has 5 entries: reconcile_sweep, orphan_sweep, daily_summary, renew_zoho_webhook, nirvana_poll_sweep."""
     import importlib
     import app.worker.settings as ws_mod
     importlib.reload(ws_mod)
     cron_jobs = ws_mod.WorkerSettings.cron_jobs
-    assert len(cron_jobs) == 4
+    assert len(cron_jobs) == 5
     names = {cj.coroutine.__name__ for cj in cron_jobs}
     assert "reconcile_sweep" in names
     assert "orphan_sweep" in names
     assert "daily_summary" in names
     assert "renew_zoho_webhook" in names
+    assert "nirvana_poll_sweep" in names
     by_name = {cj.coroutine.__name__: cj for cj in cron_jobs}
     reconcile = by_name["reconcile_sweep"]
     orphan = by_name["orphan_sweep"]
     daily = by_name["daily_summary"]
     renew = by_name["renew_zoho_webhook"]
+    nirvana = by_name["nirvana_poll_sweep"]
     # arq CronJob: minute is stored as a set, second as an int
     assert reconcile.minute == {0, 15, 30, 45}
     # second may be int 0 or set {0} depending on arq version — accept either
@@ -359,8 +361,12 @@ def test_cron_jobs_registered(complete_env):
     # renew_zoho_webhook: every hour at :00 and :45
     assert renew.minute in ({0, 45}, frozenset({0, 45}))
     assert renew.second in (0, {0})
+    # nirvana_poll_sweep: same 15-minute cadence as reconcile_sweep
+    assert nirvana.minute == {0, 15, 30, 45}
+    assert nirvana.second in (0, {0})
     # timeout is stored as timeout_s (in seconds)
     assert reconcile.timeout_s is not None
     assert orphan.timeout_s is not None
     assert daily.timeout_s is not None
     assert renew.timeout_s is not None
+    assert nirvana.timeout_s is not None
