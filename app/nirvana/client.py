@@ -38,6 +38,9 @@ class NirvanaAPIError(Exception):
 class NirvanaClient:
     """Async client for Nirvana's MCP REST wrapper (D-02: plain httpx, no MCP SDK)."""
 
+    FETCH_PAGE_SIZE = 200
+    MAX_FETCH_PAGES = 25  # safety cap: 5000 Zoho-tagged tasks, defensive only
+
     def __init__(self, pat: str) -> None:
         self._pat = pat
         self._http = httpx.AsyncClient(timeout=15)
@@ -72,6 +75,34 @@ class NirvanaClient:
             return result
         return result.get("tasks", []) if isinstance(result, dict) else []
 
+    async def get_tasks_paginated(
+        self,
+        page_size: int = FETCH_PAGE_SIZE,
+        max_pages: int = MAX_FETCH_PAGES,
+        **filters: Any,
+    ) -> list[dict[str, Any]]:
+        """Loop get_tasks via offset/has_more until exhausted or max_pages
+        safety cap is hit (confirmed live 2026-07-28: offset/has_more are
+        real, working pagination fields — get_tasks is NOT hard-capped at a
+        single 200-item page as originally assumed; that assumption produced
+        a real production bug, see fetch()'s docstring). Returns the
+        concatenated task list across all pages."""
+        all_tasks: list[dict[str, Any]] = []
+        offset = 0
+        for _ in range(max_pages):
+            result = await self.call_tool(
+                "get_tasks", {**filters, "limit": page_size, "offset": offset}
+            )
+            tasks = result.get("tasks", []) if isinstance(result, dict) else (
+                result if isinstance(result, list) else []
+            )
+            all_tasks.extend(tasks)
+            has_more = bool(result.get("has_more")) if isinstance(result, dict) else False
+            if not has_more or not tasks:
+                break
+            offset += page_size
+        return all_tasks
+
     async def get_tags(self) -> Any:
         return await self.call_tool("get_tags", {})
 
@@ -88,17 +119,30 @@ class NirvanaClient:
 
     async def fetch(self, external_id: str) -> Any:
         """Fetch one task by id. Nirvana's get_tasks has no single-id filter (only
-        state/tags/query/starred/overdue/due_before per D-04) — scans up to 200
-        results and matches by id. Acceptable at personal-account scale (D-09);
-        documented limitation if the account exceeds 200 active items, see
-        RESEARCH.md Pitfall 4."""
+        state/tags/query/starred/overdue/due_before per D-04).
+
+        Scoped to tags=["Zoho"] rather than scanning the whole account:
+        confirmed live 2026-07-28 that every task this sync creates carries
+        the "Zoho" tag (app.nirvana.writer.BASE_TAGS), so this filter reliably
+        narrows the scan to only sync-managed tasks (43 vs 551 total tasks in
+        this account at time of writing) — dramatically shrinking scan scope
+        and sidestepping the 200-item single-page cap that previously caused
+        false NotFoundErrors in production once the account grew past 200
+        total tasks (original Pitfall 4 mitigation was an unfiltered single
+        page; that silently missed tasks outside the first 200 by whatever
+        the API's default ordering is — confirmed as a real, not hypothetical,
+        production bug). Still paginates via get_tasks_paginated as a
+        defensive fallback should Zoho-tagged tasks themselves ever exceed
+        one page."""
         from app.nirvana.normalise import nirvana_task_to_normalised
 
-        tasks = await self.get_tasks(limit=200)
+        tasks = await self.get_tasks_paginated(tags=["Zoho"])
         for task in tasks:
             if str(task.get("id")) == str(external_id):
                 return nirvana_task_to_normalised(task)
-        raise NirvanaNotFoundError(f"404 Not Found — task {external_id} not in get_tasks() scan")
+        raise NirvanaNotFoundError(
+            f"404 Not Found — task {external_id} not found among Zoho-tagged tasks"
+        )
 
     async def create(self, normalised: Any, zoho_task_id: str, description: str | None = None) -> str:
         # description becomes the Nirvana task's `note` field (2026-07-28

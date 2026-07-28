@@ -216,6 +216,87 @@ async def test_fetch_missing_id_raises_not_found(httpx_mock):
 
 
 @pytest.mark.asyncio
+async def test_fetch_scopes_to_zoho_tag(httpx_mock):
+    """2026-07-28: fetch() must filter by tags=["Zoho"], not scan the whole
+    account — confirmed live that an unfiltered single-page scan silently
+    missed tasks once the account exceeded 200 total items."""
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/get_tasks",
+        method="POST",
+        match_json={"tags": ["Zoho"], "limit": NirvanaClient.FETCH_PAGE_SIZE, "offset": 0},
+        json={"ok": True, "result": {"tasks": [{"id": "N1", "name": "Buy milk", "state": "next"}], "has_more": False}},
+    )
+    client = NirvanaClient(pat="pat")
+    result = await client.fetch("N1")
+    assert result.title == "Buy milk"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_fetch_paginates_across_multiple_pages(httpx_mock):
+    """Confirmed live 2026-07-28: get_tasks supports real offset/has_more
+    pagination — fetch() must follow it rather than giving up after one page."""
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/get_tasks",
+        method="POST",
+        match_json={"tags": ["Zoho"], "limit": NirvanaClient.FETCH_PAGE_SIZE, "offset": 0},
+        json={"ok": True, "result": {"tasks": [{"id": "N1", "name": "Page 1 task"}], "has_more": True}},
+    )
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/get_tasks",
+        method="POST",
+        match_json={"tags": ["Zoho"], "limit": NirvanaClient.FETCH_PAGE_SIZE, "offset": NirvanaClient.FETCH_PAGE_SIZE},
+        json={"ok": True, "result": {"tasks": [{"id": "N2", "name": "Page 2 task"}], "has_more": False}},
+    )
+    client = NirvanaClient(pat="pat")
+    result = await client.fetch("N2")
+    assert result.title == "Page 2 task"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_tasks_paginated_stops_at_max_pages_safety_cap():
+    """Defensive cap: never loop forever even if the API always reports
+    has_more=True (e.g. a bug on Nirvana's side)."""
+    client = NirvanaClient(pat="pat")
+    call_count = 0
+
+    async def fake_call_tool(tool, args):
+        nonlocal call_count
+        call_count += 1
+        return {"tasks": [{"id": f"N{call_count}"}], "has_more": True}
+
+    with patch.object(client, "call_tool", side_effect=fake_call_tool):
+        tasks = await client.get_tasks_paginated(page_size=10, max_pages=3)
+
+    assert call_count == 3
+    assert len(tasks) == 3
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_tasks_paginated_stops_when_page_returns_no_tasks():
+    """A page returning zero tasks (even with a stale has_more=True) signals
+    exhaustion — must not loop past it."""
+    client = NirvanaClient(pat="pat")
+    call_count = 0
+
+    async def fake_call_tool(tool, args):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return {"tasks": [{"id": "N1"}], "has_more": True}
+        return {"tasks": [], "has_more": True}  # stale has_more, no items -> stop
+
+    with patch.object(client, "call_tool", side_effect=fake_call_tool):
+        tasks = await client.get_tasks_paginated(page_size=10, max_pages=25)
+
+    assert call_count == 2
+    assert len(tasks) == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_create_delegates_to_create_nirvana_task_and_accepts_description():
     """description becomes the Nirvana task's note (2026-07-28 decision)."""
     client = NirvanaClient(pat="pat")

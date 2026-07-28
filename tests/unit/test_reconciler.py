@@ -888,7 +888,7 @@ async def test_nirvana_poll_sweep_inactive_noop(complete_env, monkeypatch):
 
     await nirvana_poll_sweep(ctx)
 
-    ctx["task_provider"].get_tasks.assert_not_called()
+    ctx["task_provider"].get_tasks_paginated.assert_not_called()
     ctx["task_provider"].get_task_counts.assert_not_called()
     mock_enqueue.assert_not_called()
 
@@ -905,7 +905,7 @@ async def test_nirvana_poll_sweep_enqueues_on_hash_mismatch(complete_env, monkey
 
     ctx = _make_nirvana_ctx()
     ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": 1})
-    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+    ctx["task_provider"].get_tasks_paginated = AsyncMock(return_value=[
         {"id": "N1", "name": "Buy milk", "duedate": "2026-05-01", "state": "next", "starred": False, "completed": None},
     ])
 
@@ -943,7 +943,7 @@ async def test_nirvana_poll_sweep_unmatched_task_skipped(complete_env, monkeypat
 
     ctx = _make_nirvana_ctx()
     ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": 1})
-    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+    ctx["task_provider"].get_tasks_paginated = AsyncMock(return_value=[
         {"id": "N-native", "name": "Native nirvana task", "duedate": None, "state": "next", "starred": False, "completed": None},
     ])
 
@@ -966,15 +966,19 @@ async def test_nirvana_poll_sweep_unmatched_task_skipped(complete_env, monkeypat
 
 @pytest.mark.asyncio
 async def test_nirvana_poll_sweep_cap_hit_warning(complete_env, monkeypatch):
-    """When get_tasks returns exactly NIRVANA_POLL_LIMIT items, a
-    'nirvana_poll_sweep_cap_hit' warning is logged."""
-    from app.worker.reconciler import nirvana_poll_sweep, NIRVANA_POLL_LIMIT
+    """When get_tasks_paginated returns exactly the pagination safety-cap
+    count (page_size * max_pages), a 'nirvana_poll_sweep_cap_hit' warning is
+    logged."""
+    from app.worker.reconciler import (
+        nirvana_poll_sweep, NIRVANA_POLL_PAGE_SIZE, NIRVANA_POLL_MAX_PAGES,
+    )
 
+    cap = NIRVANA_POLL_PAGE_SIZE * NIRVANA_POLL_MAX_PAGES
     ctx = _make_nirvana_ctx()
-    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": NIRVANA_POLL_LIMIT})
-    ctx["task_provider"].get_tasks = AsyncMock(return_value=[
+    ctx["task_provider"].get_task_counts = AsyncMock(return_value={"next": cap})
+    ctx["task_provider"].get_tasks_paginated = AsyncMock(return_value=[
         {"id": f"N{i}", "name": f"Task {i}", "duedate": None, "state": "next", "starred": False, "completed": None}
-        for i in range(NIRVANA_POLL_LIMIT)
+        for i in range(cap)
     ])
 
     factory, sess = _mock_session_factory_with_state(None)
@@ -1005,7 +1009,7 @@ async def test_nirvana_poll_sweep_last_run_updated(complete_env, monkeypatch):
 
     ctx = _make_nirvana_ctx()
     ctx["task_provider"].get_task_counts = AsyncMock(return_value={})
-    ctx["task_provider"].get_tasks = AsyncMock(return_value=[])
+    ctx["task_provider"].get_tasks_paginated = AsyncMock(return_value=[])
 
     factory, sess = _mock_session_factory_with_state(None)
     ctx["session_factory"] = factory

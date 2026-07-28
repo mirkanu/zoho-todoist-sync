@@ -153,7 +153,8 @@ async def reconcile_sweep(ctx: dict) -> None:
 
 
 KV_NIRVANA_POLL_LAST_RUN = "nirvana_poll_sweep_last_run"
-NIRVANA_POLL_LIMIT = 200  # get_tasks() hard cap (D-04) — RESEARCH.md Pitfall 4
+NIRVANA_POLL_PAGE_SIZE = 200  # get_tasks() per-page size (D-04)
+NIRVANA_POLL_MAX_PAGES = 25  # safety cap: 5000 Zoho-tagged tasks, defensive only
 
 
 async def nirvana_poll_sweep(ctx: dict) -> None:
@@ -162,9 +163,15 @@ async def nirvana_poll_sweep(ctx: dict) -> None:
     is not 'nirvana', mirroring the D-13 pattern used for the Todoist webhook route
     so switching providers never requires touching cron registration.
 
-    Full-list poll + diff against sync_state, mirroring reconcile_sweep's Zoho-side
-    diff loop. Bounded by get_tasks' 200-item cap — logs a warning when the cap is
-    hit so staleness beyond 200 active Nirvana items is observable, not silent.
+    Poll + diff against sync_state, mirroring reconcile_sweep's Zoho-side diff
+    loop. Scoped to tags=["Zoho"] (every sync-managed task carries this tag,
+    see app.nirvana.writer.BASE_TAGS) rather than the whole account, and
+    paginated via NirvanaClient.get_tasks_paginated — confirmed live
+    2026-07-28 that a raw unfiltered single-page scan silently missed tasks
+    once the account grew past 200 total items (551 total vs. ~270 active at
+    time of writing); the original 200-item "hard cap" assumption from
+    RESEARCH.md Pitfall 4 was wrong, offset/has_more pagination is real and
+    supported.
     """
     settings = get_settings()
     if settings.task_provider != "nirvana":
@@ -178,12 +185,14 @@ async def nirvana_poll_sweep(ctx: dict) -> None:
     counts = await task_provider.get_task_counts()
     log.info("nirvana_poll_sweep_start", counts=counts)
 
-    tasks = await task_provider.get_tasks(limit=NIRVANA_POLL_LIMIT)
-    if len(tasks) == NIRVANA_POLL_LIMIT:
+    tasks = await task_provider.get_tasks_paginated(
+        page_size=NIRVANA_POLL_PAGE_SIZE, max_pages=NIRVANA_POLL_MAX_PAGES, tags=["Zoho"]
+    )
+    if len(tasks) >= NIRVANA_POLL_PAGE_SIZE * NIRVANA_POLL_MAX_PAGES:
         log.warning(
             "nirvana_poll_sweep_cap_hit",
-            limit=NIRVANA_POLL_LIMIT,
-            hint="Account may have >200 active items; some may be missed this cycle.",
+            limit=NIRVANA_POLL_PAGE_SIZE * NIRVANA_POLL_MAX_PAGES,
+            hint="Zoho-tagged tasks may exceed the pagination safety cap; some may be missed this cycle.",
         )
 
     enqueued = 0
