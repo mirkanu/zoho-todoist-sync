@@ -12,6 +12,7 @@ def _make_reconciler_ctx():
         "session_factory": MagicMock(),
         "zoho_client": AsyncMock(),
         "todoist_client": AsyncMock(),
+        "nirvana_client": AsyncMock(),
         "task_provider": AsyncMock(),
     }
 
@@ -526,7 +527,7 @@ async def test_orphan_first_cycle(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Must NOT delete anything on first cycle
-    ctx["task_provider"].delete.assert_not_called()
+    ctx["todoist_client"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # The locked row's orphan_check_count must have been incremented
     assert sess.get.await_count >= 1, "session.get was not called to lock the row"
@@ -549,7 +550,7 @@ async def test_orphan_second_cycle_deletion(complete_env, monkeypatch):
 
     ctx["zoho_client"].get_task = AsyncMock(side_effect=ZohoNotFoundError("not found"))
     # Todoist is healthy (not missing)
-    ctx["task_provider"].fetch = AsyncMock(
+    ctx["todoist_client"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
@@ -557,8 +558,8 @@ async def test_orphan_second_cycle_deletion(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Todoist counterpart must be deleted (Zoho gone → delete Todoist)
-    ctx["task_provider"].delete.assert_called_once()
-    call_args = ctx["task_provider"].delete.call_args
+    ctx["todoist_client"].delete.assert_called_once()
+    call_args = ctx["todoist_client"].delete.call_args
     assert call_args.args[0] == state.external_task_id
 
     # SyncState row must be deleted
@@ -595,7 +596,7 @@ async def test_orphan_reassignment_detected(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # First cycle: should NOT delete
-    ctx["task_provider"].delete.assert_not_called()
+    ctx["todoist_client"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get called to increment count
     assert sess.get.await_count >= 1
@@ -621,7 +622,7 @@ async def test_orphan_todoist_missing(complete_env, monkeypatch):
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
     # Todoist is missing
-    ctx["task_provider"].fetch = AsyncMock(
+    ctx["todoist_client"].fetch = AsyncMock(
         side_effect=TodoistNotFoundError("not found")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
@@ -655,14 +656,14 @@ async def test_orphan_count_reset(complete_env, monkeypatch):
     ctx["zoho_client"].get_task = AsyncMock(
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
-    ctx["task_provider"].fetch = AsyncMock(
+    ctx["todoist_client"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
 
     await orphan_sweep(ctx)
 
-    ctx["task_provider"].delete.assert_not_called()
+    ctx["todoist_client"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get called to reset count
     assert sess.get.await_count >= 1
@@ -689,7 +690,7 @@ async def test_orphan_zoho_rate_limit_skipped(complete_env, monkeypatch):
     await orphan_sweep(ctx)
 
     # Row skipped — no deletes, no count increment (no session.get call to increment)
-    ctx["task_provider"].delete.assert_not_called()
+    ctx["todoist_client"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     # session.get should NOT have been called (no increment/delete)
     sess.get.assert_not_awaited()
@@ -713,14 +714,14 @@ async def test_orphan_todoist_rate_limit_skipped(complete_env, monkeypatch):
     ctx["zoho_client"].get_task = AsyncMock(
         return_value=_healthy_zoho_response("Z1", "test-user-id")
     )
-    ctx["task_provider"].fetch = AsyncMock(
+    ctx["todoist_client"].fetch = AsyncMock(
         side_effect=TodoistRateLimitError("rate limited")
     )
     mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
 
     await orphan_sweep(ctx)
 
-    ctx["task_provider"].delete.assert_not_called()
+    ctx["todoist_client"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
     sess.get.assert_not_awaited()
 
@@ -756,7 +757,7 @@ async def test_orphan_sweep_drift_enqueues_sync(complete_env, monkeypatch):
         }]}
     )
     # Todoist is healthy
-    ctx["task_provider"].fetch = AsyncMock(
+    ctx["todoist_client"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
 
@@ -772,7 +773,7 @@ async def test_orphan_sweep_drift_enqueues_sync(complete_env, monkeypatch):
     assert call.kwargs.get("source") == "orphan_drift"
     assert call.kwargs.get("defer_secs") == 0
     # Nothing should be deleted
-    ctx["task_provider"].delete.assert_not_called()
+    ctx["todoist_client"].delete.assert_not_called()
     mock_delete_zoho.assert_not_called()
 
 
@@ -806,7 +807,7 @@ async def test_orphan_sweep_healthy_no_drift_no_enqueue(complete_env, monkeypatc
     ctx["session_factory"] = factory
 
     ctx["zoho_client"].get_task = AsyncMock(return_value={"data": [zoho_data]})
-    ctx["task_provider"].fetch = AsyncMock(
+    ctx["todoist_client"].fetch = AsyncMock(
         return_value=_healthy_todoist_task("Z1")
     )
 
@@ -817,6 +818,83 @@ async def test_orphan_sweep_healthy_no_drift_no_enqueue(complete_env, monkeypatc
     await orphan_sweep(ctx)
 
     mock_enqueue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 18b: REGRESSION (2026-07-28 incident) — mixed-provider rows must each
+# be checked against THEIR OWN provider's client, never the globally active
+# ctx["task_provider"]. A nirvana-provider row, checked while a todoist row
+# also exists in the same sweep, must use ctx["nirvana_client"] for its
+# fetch — using the wrong client (e.g. checking a Todoist ID against
+# Nirvana, or vice versa) always 404s and, after two cycles, deletes a real
+# Zoho task. This exact bug deleted 64 real Zoho tasks in production.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_uses_correct_client_per_row_provider(complete_env, monkeypatch):
+    """A todoist-provider row and a nirvana-provider row in the SAME sweep
+    must each be fetched via their own provider's client. Using
+    ctx["task_provider"] for both (the pre-fix bug) would call the wrong
+    client for whichever row's provider doesn't match the active one."""
+    from app.worker.reconciler import orphan_sweep
+
+    todoist_state = _make_state(zoho_task_id="Z-TODOIST", todoist_task_id="T1", orphan_check_count=0)
+    todoist_state.provider = "todoist"
+
+    nirvana_state = _make_state(zoho_task_id="Z-NIRVANA", todoist_task_id="N1", orphan_check_count=0)
+    nirvana_state.provider = "nirvana"
+
+    factory, sess = _mock_session_factory_with_rows([todoist_state, nirvana_state])
+    ctx = _make_reconciler_ctx()
+    ctx["session_factory"] = factory
+
+    ctx["zoho_client"].get_task = AsyncMock(
+        side_effect=lambda zoho_id: _healthy_zoho_response(zoho_id)
+    )
+    ctx["todoist_client"].fetch = AsyncMock(return_value=_healthy_todoist_task("Z-TODOIST"))
+    ctx["nirvana_client"].fetch = AsyncMock(return_value=_healthy_todoist_task("Z-NIRVANA"))
+    # If the bug were present, ctx["task_provider"] would be used for both
+    # rows instead — assert it is NEVER called at all in orphan_sweep.
+    ctx["task_provider"].fetch = AsyncMock(side_effect=AssertionError(
+        "orphan_sweep must not use ctx['task_provider'] directly — use the "
+        "per-row client via _provider_client_for_row"
+    ))
+
+    _common_orphan_patches(monkeypatch)
+
+    await orphan_sweep(ctx)
+
+    ctx["todoist_client"].fetch.assert_called_once_with("T1")
+    ctx["nirvana_client"].fetch.assert_called_once_with("N1")
+    ctx["task_provider"].fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_nirvana_row_missing_deletes_via_nirvana_client(complete_env, monkeypatch):
+    """A confirmed-orphan nirvana-provider row must call delete() on
+    ctx["nirvana_client"], not ctx["todoist_client"] or ctx["task_provider"]."""
+    from app.worker.reconciler import orphan_sweep
+    from app.nirvana.client import NirvanaNotFoundError
+
+    state = _make_state(zoho_task_id="Z-NIRVANA", todoist_task_id="N1", orphan_check_count=1)
+    state.provider = "nirvana"
+
+    factory, sess = _mock_session_factory_with_rows([state])
+    ctx = _make_reconciler_ctx()
+    ctx["session_factory"] = factory
+
+    ctx["zoho_client"].get_task = AsyncMock(return_value=_healthy_zoho_response("Z-NIRVANA"))
+    ctx["nirvana_client"].fetch = AsyncMock(side_effect=NirvanaNotFoundError("not found"))
+    ctx["nirvana_client"].delete = AsyncMock()
+
+    mock_delete_todoist, mock_delete_zoho, _, _ = _common_orphan_patches(monkeypatch)
+
+    await orphan_sweep(ctx)
+
+    mock_delete_zoho.assert_called_once()
+    ctx["nirvana_client"].delete.assert_not_called()  # todoist_missing path deletes Zoho, not Nirvana
+    ctx["todoist_client"].delete.assert_not_called()
+    ctx["task_provider"].delete.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

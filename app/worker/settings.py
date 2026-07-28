@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.nirvana.client import NirvanaClient
 from app.providers.base import get_provider
 from app.todoist.client import TodoistClient
 from app.worker.daily_summary import daily_summary
@@ -97,6 +98,19 @@ async def on_startup(ctx: dict) -> None:
     # creation are Todoist-specific infra with no TaskProvider equivalent —
     # kept as a raw TodoistClient regardless of the active TASK_PROVIDER.
     ctx["todoist_client"] = TodoistClient(api_token=settings.todoist_api_token)
+    # orphan_sweep scans ALL sync_state rows regardless of which provider is
+    # currently active (mixed-provider state is the normal condition during
+    # and after a migration cutover, e.g. old provider='todoist' rows
+    # coexisting with new provider='nirvana' rows). It MUST check each row's
+    # external task against the client matching THAT row's own `provider`
+    # column, never blindly against ctx["task_provider"] — using the wrong
+    # client for a row (e.g. querying Nirvana's API with a Todoist ID) always
+    # 404s, and after two orphan_sweep cycles that false-404 triggers a real
+    # deletion of the Zoho task. This caused a real incident on 2026-07-28
+    # (64 Zoho tasks deleted, recovered from Zoho's Recycle Bin) before this
+    # fix — both clients are now unconditionally available in ctx so
+    # orphan_sweep can pick the correct one per row.
+    ctx["nirvana_client"] = NirvanaClient(pat=settings.nirvana_pat)
 
     meta = await zoho_client.get_fields_metadata("Tasks")
     zoho_field_cache["todoist_task_id_api_name"] = meta["todoist_task_id_api_name"]
@@ -128,6 +142,9 @@ async def on_shutdown(ctx: dict) -> None:
     todoist_client = ctx.get("todoist_client")
     if todoist_client is not None:
         await todoist_client.close()
+    nirvana_client = ctx.get("nirvana_client")
+    if nirvana_client is not None:
+        await nirvana_client.close()
     engine = ctx.get("engine")
     if engine is not None:
         await engine.dispose()

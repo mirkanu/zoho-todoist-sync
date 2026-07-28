@@ -226,6 +226,26 @@ async def nirvana_poll_sweep(ctx: dict) -> None:
     log.info("nirvana_poll_sweep_complete", task_count=len(tasks), enqueued=enqueued)
 
 
+def _provider_client_for_row(ctx: dict, provider: str) -> Any:
+    """Select the client matching a sync_state row's OWN `provider` column —
+    never the globally active ctx["task_provider"]. Mixed-provider state
+    (old provider='todoist' rows coexisting with new provider='nirvana' rows)
+    is the normal condition during and after a migration cutover; using the
+    wrong client for a row always 404s, and orphan_sweep's two-cycle
+    confirmation turns that false-404 into a real deletion. This caused a
+    real incident on 2026-07-28 (64 Zoho tasks deleted, recovered from
+    Zoho's Recycle Bin) before this fix.
+    """
+    if provider == "todoist":
+        return ctx["todoist_client"]
+    if provider == "nirvana":
+        return ctx["nirvana_client"]
+    # Defensive fallback for any unexpected/legacy provider value — mirrors
+    # the pre-fix behavior rather than crashing, but should never trigger in
+    # practice since provider is DB-constrained to ('todoist', 'nirvana').
+    return ctx["task_provider"]
+
+
 async def orphan_sweep(ctx: dict) -> None:
     """Hourly sweep: check all sync_state rows for orphaned task pairs.
 
@@ -235,7 +255,6 @@ async def orphan_sweep(ctx: dict) -> None:
     """
     session_factory = ctx["session_factory"]
     zoho_client = ctx["zoho_client"]
-    task_provider = ctx["task_provider"]
     settings = get_settings()
 
     log.info("orphan_sweep_start")
@@ -285,8 +304,9 @@ async def orphan_sweep(ctx: dict) -> None:
         # ------------------------------------------------------------------
         # External (Todoist/Nirvana) check: existence
         # ------------------------------------------------------------------
+        provider_client = _provider_client_for_row(ctx, state.provider)
         try:
-            external_task = await task_provider.fetch(state.external_task_id)
+            external_task = await provider_client.fetch(state.external_task_id)
         except (TodoistNotFoundError, NirvanaNotFoundError):
             todoist_missing = True
         except (TodoistRateLimitError, TodoistAPIError, NirvanaRateLimitError, NirvanaAPIError) as exc:
@@ -381,9 +401,12 @@ async def _handle_orphan(
         # Zoho task gone or reassigned (EDGE-1) → delete external counterpart.
         # external_task is a NormalisedTask (task_provider.fetch() already
         # normalises) — use its .title, not a raw SDK object's .content.
+        # Must use the client matching THIS row's own provider, not whichever
+        # provider is globally active — see _provider_client_for_row.
         task_name = getattr(todoist_task, "title", None) if todoist_task is not None else None
         try:
-            await ctx["task_provider"].delete(state.external_task_id, task_name=task_name)
+            provider_client = _provider_client_for_row(ctx, state.provider)
+            await provider_client.delete(state.external_task_id, task_name=task_name)
         except Exception as exc:
             log.error(
                 "orphan_external_delete_failed",
