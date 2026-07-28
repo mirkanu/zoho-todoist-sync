@@ -75,6 +75,35 @@ async def test_create_nirvana_task_state_override_for_migration(complete_env):
 
 
 @pytest.mark.asyncio
+async def test_create_nirvana_task_scheduled_requires_start_date(complete_env):
+    """Nirvana's create_tasks 400s if state="scheduled" is sent without
+    startdate (confirmed live 2026-07-28) — start_date must be passed through."""
+    mock_client = AsyncMock()
+    mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
+
+    normalised = NormalisedTask(title="t", due_date="2026-09-01", priority=1, is_completed=False)
+    await create_nirvana_task(
+        normalised, zoho_task_id="Z1", client=mock_client,
+        state="scheduled", start_date="2026-09-01",
+    )
+
+    items = mock_client.create_tasks.call_args.args[0]
+    assert items[0]["startdate"] == "2026-09-01"
+
+
+@pytest.mark.asyncio
+async def test_create_nirvana_task_omits_start_date_when_none(complete_env):
+    mock_client = AsyncMock()
+    mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])
+
+    normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
+    await create_nirvana_task(normalised, zoho_task_id="Z1", client=mock_client)
+
+    items = mock_client.create_tasks.call_args.args[0]
+    assert "startdate" not in items[0]
+
+
+@pytest.mark.asyncio
 async def test_create_nirvana_task_includes_note_when_provided(complete_env):
     mock_client = AsyncMock()
     mock_client.create_tasks = AsyncMock(return_value=[{"id": "N1"}])

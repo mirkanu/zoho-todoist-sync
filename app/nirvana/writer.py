@@ -26,18 +26,24 @@ async def create_nirvana_task(
     note: str | None = None,
     state: str = "inbox",
     extra_tags: list[str] | None = None,
+    start_date: str | None = None,
 ) -> str:
     """Create a Nirvana task. Returns new task ID as a string.
 
     Ongoing sync always calls this with defaults: state="inbox", unstarred —
     Zoho priority is ignored entirely (2026-07-28 decision: the user doesn't
-    use Zoho task priority). `state`/`extra_tags` overrides exist only for
-    scripts/migrate_todoist_labels_to_nirvana.py, which translates historical
-    Todoist labels (e.g. "Deferred" -> state="scheduled"/"someday") for the
-    one-off Todoist->Nirvana cutover — the ongoing pipeline never overrides
-    these. `note` (if provided) becomes the Nirvana task's visible note/description,
-    built by app.nirvana.description.build_task_note — set only at creation,
-    never touched on update (mirrors Todoist's DESC-5 rule).
+    use Zoho task priority). `state`/`extra_tags`/`start_date` overrides exist
+    only for scripts/migrate_todoist_labels_to_nirvana.py, which translates
+    historical Todoist labels (e.g. "Deferred" -> state="scheduled"/"someday")
+    for the one-off Todoist->Nirvana cutover — the ongoing pipeline never
+    overrides these. `note` (if provided) becomes the Nirvana task's visible
+    note/description, built by app.nirvana.description.build_task_note — set
+    only at creation, never touched on update (mirrors Todoist's DESC-5 rule).
+
+    Nirvana's API requires `startdate` whenever `state="scheduled"` (confirmed
+    live 2026-07-28: create_tasks 400s with "startdate is required when state
+    is 'scheduled'" if omitted) — distinct from `duedate`. Callers passing
+    state="scheduled" MUST also pass start_date.
 
     NOTE: create_tasks' real result shape is confirmed against a live call in
     Plan 09-07 Task 2: `{"ok": true, "tasks": [{"id": ..., ...}], "count": 1}`
@@ -56,6 +62,8 @@ async def create_nirvana_task(
     item: dict = {"name": normalised.title, "state": state, "starred": False, "tags": tags}
     if normalised.due_date is not None:
         item["duedate"] = normalised.due_date
+    if start_date is not None:
+        item["startdate"] = start_date
     if note is not None:
         item["note"] = note
 

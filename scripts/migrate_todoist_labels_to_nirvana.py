@@ -86,23 +86,33 @@ async def fetch_all_open_zoho_tasks(access_token: str, owner_id: str) -> list[di
     return results
 
 
-def compute_state_and_extra_tags(labels: list[str], due_date: str | None) -> tuple[str, list[str]]:
-    """Translate Todoist labels into a Nirvana initial state + extra tags,
-    per the 2026-07-28 mapping decision. "Deferred" becomes a state, never a
-    tag; "WaitingFor"/"Agenda" both collapse into the single "Other Contacts"
-    tag; everything else passes through as an identically-named tag."""
+def compute_state_and_extra_tags(
+    labels: list[str], due_date: str | None
+) -> tuple[str, list[str], str | None]:
+    """Translate Todoist labels into a Nirvana initial state + extra tags +
+    start_date, per the 2026-07-28 mapping decision. "Deferred" becomes a
+    state, never a tag: state="scheduled" (scheduled to the task's own due
+    date — Nirvana requires startdate whenever state="scheduled") if a due
+    date is present, else state="someday" (no start_date needed).
+    "WaitingFor"/"Agenda" both collapse into the single "Other Contacts" tag;
+    everything else passes through as an identically-named tag."""
     state = "inbox"
+    start_date: str | None = None
     extra_tags: list[str] = []
     for label in labels:
         if label == DEFERRED_LABEL:
-            state = "scheduled" if due_date else "someday"
+            if due_date:
+                state = "scheduled"
+                start_date = due_date
+            else:
+                state = "someday"
         elif label in CONTACT_LABELS:
             if CONTACT_TAG_TARGET not in extra_tags:
                 extra_tags.append(CONTACT_TAG_TARGET)
         else:
             if label not in extra_tags:
                 extra_tags.append(label)
-    return state, extra_tags
+    return state, extra_tags, start_date
 
 
 async def migrate_one_task(
@@ -144,7 +154,7 @@ async def migrate_one_task(
         labels = []
 
     normalised = zoho_record_to_normalised(record, terminal_statuses)
-    nirvana_state, extra_tags = compute_state_and_extra_tags(labels, normalised.due_date)
+    nirvana_state, extra_tags, start_date = compute_state_and_extra_tags(labels, normalised.due_date)
     note = build_task_note(zoho_task_id, record)
 
     log.info(
@@ -153,6 +163,7 @@ async def migrate_one_task(
         todoist_labels=labels,
         nirvana_state=nirvana_state,
         extra_tags=extra_tags,
+        start_date=start_date,
         dry_run=dry_run,
     )
 
@@ -162,7 +173,7 @@ async def migrate_one_task(
 
     new_nirvana_id = await create_nirvana_task(
         normalised, zoho_task_id, nirvana_client,
-        note=note, state=nirvana_state, extra_tags=extra_tags,
+        note=note, state=nirvana_state, extra_tags=extra_tags, start_date=start_date,
     )
     await write_todoist_id_to_zoho(zoho_task_id, new_nirvana_id, access_token)
 
