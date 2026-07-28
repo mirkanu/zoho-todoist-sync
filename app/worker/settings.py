@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.providers.base import get_provider
+from app.todoist.client import TodoistClient
 from app.worker.daily_summary import daily_summary
 from app.worker.jobs import sync_task
 from app.worker.reconciler import (
@@ -92,6 +93,10 @@ async def on_startup(ctx: dict) -> None:
     zoho_client = ZohoClient(access_token=access_token)
     ctx["zoho_client"] = zoho_client
     ctx["task_provider"] = get_provider(settings)
+    # reconcile_sweep's Todoist Sync-API delta fetch and daily_summary's task
+    # creation are Todoist-specific infra with no TaskProvider equivalent —
+    # kept as a raw TodoistClient regardless of the active TASK_PROVIDER.
+    ctx["todoist_client"] = TodoistClient(api_token=settings.todoist_api_token)
 
     meta = await zoho_client.get_fields_metadata("Tasks")
     zoho_field_cache["todoist_task_id_api_name"] = meta["todoist_task_id_api_name"]
@@ -120,6 +125,9 @@ async def on_shutdown(ctx: dict) -> None:
     task_provider = ctx.get("task_provider")
     if task_provider is not None:
         await task_provider.close()
+    todoist_client = ctx.get("todoist_client")
+    if todoist_client is not None:
+        await todoist_client.close()
     engine = ctx.get("engine")
     if engine is not None:
         await engine.dispose()

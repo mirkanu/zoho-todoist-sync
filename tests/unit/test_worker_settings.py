@@ -114,6 +114,7 @@ async def test_on_startup_populates_ctx(complete_env):
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
          patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client), \
          patch("app.worker.settings.get_provider"), \
+         patch("app.worker.settings.TodoistClient"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", return_value=fake_refresh_loop_coro(None, None)), \
          patch("app.worker.settings.asyncio.create_task", return_value=refresh_task_mock) as mock_create_task:
@@ -125,6 +126,7 @@ async def test_on_startup_populates_ctx(complete_env):
     assert "engine" in ctx
     assert "zoho_client" in ctx
     assert "task_provider" in ctx
+    assert "todoist_client" in ctx
     assert ctx["_refresh_task"] is refresh_task_mock
     mock_create_task.assert_called_once()
 
@@ -167,6 +169,7 @@ async def test_on_startup_launches_proactive_refresh_loop(complete_env):
          patch("app.worker.settings.upsert_kv", new_callable=AsyncMock), \
          patch("app.worker.settings.ZohoClient", return_value=fake_zoho_client2), \
          patch("app.worker.settings.get_provider"), \
+         patch("app.worker.settings.TodoistClient"), \
          patch("app.worker.settings.resend"), \
          patch("app.worker.settings.proactive_refresh_loop", mock_loop), \
          patch("app.worker.settings.asyncio.create_task", return_value=refresh_task_mock) as mock_create_task:
@@ -205,12 +208,14 @@ async def test_on_shutdown_cancels_refresh_task_and_closes_clients(complete_env)
 
     refresh_task = FakeTask()
     task_provider = AsyncMock()
+    todoist_client = AsyncMock()
     engine = MagicMock()
     engine.dispose = AsyncMock()
 
     ctx = {
         "_refresh_task": refresh_task,
         "task_provider": task_provider,
+        "todoist_client": todoist_client,
         "engine": engine,
     }
 
@@ -218,6 +223,7 @@ async def test_on_shutdown_cancels_refresh_task_and_closes_clients(complete_env)
 
     assert cancel_called, "refresh_task.cancel() was not called"
     task_provider.close.assert_awaited_once()
+    todoist_client.close.assert_awaited_once()
     engine.dispose.assert_awaited_once()
 
 
