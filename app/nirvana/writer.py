@@ -21,12 +21,12 @@ async def create_nirvana_task(
 ) -> str:
     """Create a Nirvana task. Returns new task ID as a string.
 
-    NOTE: create_tasks' exact result JSON shape was not captured verbatim in any
-    spike transcript — this defensively handles the plausible shapes (a list of
-    created items, or a dict with a 'tasks'/'created' key) and raises a clear
-    NirvanaAPIError with the raw result logged if none match, rather than guessing
-    silently. Verified/adjusted against a live call in Plan 09-07 Task 2 (this
-    phase's live Nirvana smoke test) rather than deferred to a nonexistent plan.
+    NOTE: create_tasks' real result shape is confirmed against a live call in
+    Plan 09-07 Task 2: `{"ok": true, "tasks": [{"id": ..., ...}], "count": 1}`
+    — matches the existing dict-with-"tasks"-key branch below, so no code
+    change was needed. The defensive handling of the other plausible shapes
+    (bare list, "created"/"items" keys, single dict with "id") is kept as a
+    safety net, with a clear NirvanaAPIError raised if none match.
     """
     from app.nirvana.client import NirvanaAPIError  # lazy import — avoids circularity
 
@@ -61,13 +61,14 @@ async def update_nirvana_task(
     normalised: NormalisedTask,
     client: "NirvanaClient",
 ) -> None:
-    """Update name/state/starred/duedate. duedate is OMITTED (not sent as null) when
-    normalised.due_date is None — Nirvana's null-clearing behavior for duedate is
-    unverified; omission is the conservative choice. See Task 2 docstring above."""
+    """Update name/state/starred/duedate. Confirmed live in Plan 09-07 Task 2:
+    sending `duedate: ""` clears Nirvana's due date (the field disappears from
+    a subsequent get_tasks read, versus the prior real date value) — so when
+    normalised.due_date is None, this sends `"duedate": ""` to clear it rather
+    than omitting the key."""
     state, starred = todoist_priority_to_nirvana(normalised.priority)
     update: dict = {"id": external_id, "name": normalised.title, "state": state, "starred": starred}
-    if normalised.due_date is not None:
-        update["duedate"] = normalised.due_date
+    update["duedate"] = normalised.due_date if normalised.due_date is not None else ""
     await client.update_tasks([update])
     log.info("nirvana_task_updated", nirvana_id=external_id)
 

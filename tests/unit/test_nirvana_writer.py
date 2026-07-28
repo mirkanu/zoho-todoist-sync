@@ -82,7 +82,7 @@ async def test_update_nirvana_task_includes_duedate_when_present(complete_env):
 
 
 @pytest.mark.asyncio
-async def test_update_nirvana_task_omits_duedate_when_none(complete_env):
+async def test_update_nirvana_task_clears_duedate_when_none(complete_env):
     mock_client = AsyncMock()
     mock_client.update_tasks = AsyncMock(return_value={})
 
@@ -90,7 +90,7 @@ async def test_update_nirvana_task_omits_duedate_when_none(complete_env):
     await update_nirvana_task("N1", normalised, client=mock_client)
 
     updates = mock_client.update_tasks.call_args.args[0]
-    assert "duedate" not in updates[0]
+    assert updates[0]["duedate"] == ""
 
 
 @pytest.mark.asyncio
