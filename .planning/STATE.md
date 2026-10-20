@@ -4,7 +4,7 @@ milestone: v1.1
 milestone_name: Nirvana Provider
 current_phase: 09
 status: milestone_complete
-last_updated: "2026-07-24T07:09:40.047Z"
+last_updated: "2026-10-20T15:42:00Z"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -27,3 +27,9 @@ Phase 9 is informed by three validated spikes in `.planning/spikes/` (001-003): 
 ### Roadmap Evolution
 
 - Phase 9 added: Nirvana TaskProvider — replace Todoist with Nirvana as the sync target behind a TaskProvider abstraction, based on validated spikes 001-003
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 261020-ljh | Fix NirvanaClient API parser (groups[].tasks + cursor pagination) + orphan_sweep safeguards (3-cycle for non-active provider, threshold alert, client_data_stale detection). 61 unit tests added/updated; live-network smoke test marked @pytest.mark.live_network for owner to run manually after deploy. | 2026-10-20 | 3d962d7 | [261020-ljh-fix-nirvanaclient-api-parser-add-orphan-](./quick/261020-ljh-fix-nirvanaclient-api-parser-add-orphan-/) |
