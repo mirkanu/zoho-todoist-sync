@@ -69,11 +69,38 @@ class NirvanaClient:
         result = body.get("result")
         return result if result is not None else {}
 
+    @staticmethod
+    def _extract_tasks_from_result(result: Any) -> list[dict[str, Any]]:
+        """Parse a get_tasks tool result into a flat list of task dicts.
+
+        Real Nirvana API response (confirmed live 2026-10-20) wraps the task
+        list inside result.groups[].tasks[]; top-level keys are also
+        present (ok, grammar_version, total, returned, has_more, next_cursor,
+        groups, hints, ordering). Earlier code parsed result.tasks or treated
+        the body as a flat list — both shapes were wrong and silently returned
+        an empty list, which is how orphan_sweep reported every Nirvana task
+        as missing on 2026-10-20 (76 false-positive Zoho deletions). See
+        memory `nirvana-client-broken` for the full timeline. We do NOT
+        support the older result.tasks / bare-list shapes anywhere now that
+        that bug shipped.
+        """
+        if not isinstance(result, dict):
+            return []
+        groups = result.get("groups") or []
+        if not isinstance(groups, list):
+            return []
+        tasks: list[dict[str, Any]] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            grp_tasks = group.get("tasks") or []
+            if isinstance(grp_tasks, list):
+                tasks.extend(t for t in grp_tasks if isinstance(t, dict))
+        return tasks
+
     async def get_tasks(self, **filters: Any) -> list[dict[str, Any]]:
         result = await self.call_tool("get_tasks", filters)
-        if isinstance(result, list):
-            return result
-        return result.get("tasks", []) if isinstance(result, dict) else []
+        return self._extract_tasks_from_result(result)
 
     async def get_tasks_paginated(
         self,
@@ -81,26 +108,45 @@ class NirvanaClient:
         max_pages: int = MAX_FETCH_PAGES,
         **filters: Any,
     ) -> list[dict[str, Any]]:
-        """Loop get_tasks via offset/has_more until exhausted or max_pages
-        safety cap is hit (confirmed live 2026-07-28: offset/has_more are
-        real, working pagination fields — get_tasks is NOT hard-capped at a
-        single 200-item page as originally assumed; that assumption produced
-        a real production bug, see fetch()'s docstring). Returns the
-        concatenated task list across all pages."""
+        """Loop get_tasks using cursor-based pagination until exhausted or
+        the max_pages safety cap is hit.
+
+        The API exposes `has_more` (bool) and `next_cursor` (string or null)
+        at the top level of the tool result; passing the previous
+        `next_cursor` as `cursor` in the next call returns the following
+        page. The previous (broken) implementation used offset/limit and
+        looked for `has_more` inside `result.tasks` — that returned the
+        right page-1 sometimes but never page 2+, and falsely reported
+        `has_more=False` once Nirvana's default ordering put a real task
+        outside the first 200-item page. Real bug, real incident
+        ([[nirvana-client-broken]], [[2026-10-20-orphan-sweep-incident]]).
+        `page_size` is still passed as `limit` on every call; that's the
+        only carry-over from the old shape that the API honours unchanged.
+        """
         all_tasks: list[dict[str, Any]] = []
-        offset = 0
+        cursor: str | None = None
         for _ in range(max_pages):
-            result = await self.call_tool(
-                "get_tasks", {**filters, "limit": page_size, "offset": offset}
-            )
-            tasks = result.get("tasks", []) if isinstance(result, dict) else (
-                result if isinstance(result, list) else []
-            )
-            all_tasks.extend(tasks)
-            has_more = bool(result.get("has_more")) if isinstance(result, dict) else False
-            if not has_more or not tasks:
+            args: dict[str, Any] = {**filters, "limit": page_size}
+            if cursor:
+                args["cursor"] = cursor
+            result = await self.call_tool("get_tasks", args)
+            if not isinstance(result, dict):
+                # Unexpected shape — defensive break rather than infinite loop.
                 break
-            offset += page_size
+            tasks = self._extract_tasks_from_result(result)
+            all_tasks.extend(tasks)
+            has_more = bool(result.get("has_more"))
+            next_cursor = result.get("next_cursor")
+            # Stop on the canonical "no more pages" signal, OR on a defensive
+            # safety net: an empty page while has_more/next_cursor still
+            # claim there's more is treated as end-of-stream rather than an
+            # infinite loop. Real cases (2026-07-28 sweeps) saw Nirvana's
+            # backend occasionally reply with has_more=True + 0 items on the
+            # very last page; honouring the safety net kept the old offset
+            # version from chasing ghosts.
+            if not has_more or not next_cursor or not tasks:
+                break
+            cursor = next_cursor
         return all_tasks
 
     async def get_tags(self) -> Any:
@@ -118,22 +164,19 @@ class NirvanaClient:
     # ---- TaskProvider protocol conformance (see app/providers/base.py, Plan 04) ----
 
     async def fetch(self, external_id: str) -> Any:
-        """Fetch one task by id. Nirvana's get_tasks has no single-id filter (only
-        state/tags/query/starred/overdue/due_before per D-04).
+        """Fetch one task by id. Nirvana's get_tasks has no single-id filter
+        (only state/tags/query/starred/overdue/due_before per D-04).
 
         Scoped to tags=["Zoho"] rather than scanning the whole account:
         confirmed live 2026-07-28 that every task this sync creates carries
-        the "Zoho" tag (app.nirvana.writer.BASE_TAGS), so this filter reliably
-        narrows the scan to only sync-managed tasks (43 vs 551 total tasks in
-        this account at time of writing) — dramatically shrinking scan scope
-        and sidestepping the 200-item single-page cap that previously caused
-        false NotFoundErrors in production once the account grew past 200
-        total tasks (original Pitfall 4 mitigation was an unfiltered single
-        page; that silently missed tasks outside the first 200 by whatever
-        the API's default ordering is — confirmed as a real, not hypothetical,
-        production bug). Still paginates via get_tasks_paginated as a
-        defensive fallback should Zoho-tagged tasks themselves ever exceed
-        one page."""
+        the "Zoho" tag (app.nirvana.writer.BASE_TAGS), so this filter
+        reliably narrows the scan to only sync-managed tasks — dramatically
+        shrinking scan scope and sidestepping the older
+        silent-NotFound-after-page-1 bug that hit production on 2026-10-20
+        when the previous offset/has_more parsing fell off the real
+        task list (see [[nirvana-client-broken]]).
+        Cursor-paginates via get_tasks_paginated as a defensive fallback
+        should Zoho-tagged tasks themselves ever exceed one page."""
         from app.nirvana.normalise import nirvana_task_to_normalised
 
         tasks = await self.get_tasks_paginated(tags=["Zoho"])

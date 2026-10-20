@@ -93,10 +93,22 @@ async def test_call_tool_sends_bearer_auth(httpx_mock):
 
 @pytest.mark.asyncio
 async def test_get_tasks_calls_call_tool_with_filters(httpx_mock):
+    """get_tasks forwards filters as the call_tool args verbatim and parses
+    the real groups[].tasks[] response shape (confirmed live 2026-10-20)."""
     httpx_mock.add_response(
         url=f"{BASE_URL}/get_tasks",
         method="POST",
-        json={"ok": True, "result": [{"id": "1", "name": "Buy milk"}]},
+        json={
+            "ok": True,
+            "result": {
+                "groups": [
+                    {"tasks": [{"id": "1", "name": "Buy milk"}]},
+                ],
+                "total": 1,
+                "returned": 1,
+                "has_more": False,
+            },
+        },
     )
     client = NirvanaClient(pat="pat")
     tasks = await client.get_tasks(state="next", limit=200)
@@ -108,16 +120,50 @@ async def test_get_tasks_calls_call_tool_with_filters(httpx_mock):
 
 
 @pytest.mark.asyncio
-async def test_get_tasks_handles_dict_result_with_tasks_key(httpx_mock):
+async def test_get_tasks_walks_multiple_groups(httpx_mock):
+    """Real Nirvana responses can carry more than one group (e.g. one per
+    project/area). All tasks across all groups must be collected."""
     httpx_mock.add_response(
         url=f"{BASE_URL}/get_tasks",
         method="POST",
-        json={"ok": True, "result": {"tasks": [{"id": "2"}]}},
+        json={
+            "ok": True,
+            "result": {
+                "groups": [
+                    {"tasks": [{"id": "1", "name": "First"}]},
+                    {"tasks": [{"id": "2", "name": "Second"}, {"id": "3", "name": "Third"}]},
+                    {"tasks": []},  # empty group, must be skipped
+                ],
+                "has_more": False,
+            },
+        },
     )
     client = NirvanaClient(pat="pat")
     tasks = await client.get_tasks()
-    assert tasks == [{"id": "2"}]
+    assert [t["id"] for t in tasks] == ["1", "2", "3"]
     await client.close()
+
+
+def test_extract_tasks_from_result_handles_non_dict():
+    """_extract_tasks_from_result must never raise — defensive against any
+    future shape change on Nirvana's side."""
+    assert NirvanaClient._extract_tasks_from_result(None) == []
+    assert NirvanaClient._extract_tasks_from_result([]) == []
+    assert NirvanaClient._extract_tasks_from_result("oops") == []
+    assert NirvanaClient._extract_tasks_from_result({}) == []
+    assert NirvanaClient._extract_tasks_from_result({"groups": None}) == []
+    assert NirvanaClient._extract_tasks_from_result({"groups": "no"}) == []
+
+
+def test_extract_tasks_from_result_skips_non_dict_entries():
+    """Non-dict entries inside groups[i].tasks[] must be silently dropped,
+    not crash the caller."""
+    result = {
+        "groups": [
+            {"tasks": [{"id": "ok"}, "bad-string", 42, None, {"id": "also-ok"}]},
+        ],
+    }
+    assert [t["id"] for t in NirvanaClient._extract_tasks_from_result(result)] == ["ok", "also-ok"]
 
 
 @pytest.mark.asyncio
@@ -183,15 +229,22 @@ async def test_get_task_counts_calls_call_tool(httpx_mock):
 
 @pytest.mark.asyncio
 async def test_fetch_returns_normalised_task(httpx_mock):
+    """fetch() walks the real groups[].tasks[] response shape and returns a
+    NormalisedTask (was silently returning [] before 2026-10-20 fix)."""
     httpx_mock.add_response(
         url=f"{BASE_URL}/get_tasks",
         method="POST",
         json={
             "ok": True,
-            "result": [
-                {"id": "other", "name": "Other", "state": "next", "starred": False},
-                {"id": "N1", "name": "Buy milk", "state": "next", "starred": True, "duedate": "2026-08-01"},
-            ],
+            "result": {
+                "groups": [
+                    {"tasks": [
+                        {"id": "other", "name": "Other", "state": "next", "starred": False},
+                        {"id": "N1", "name": "Buy milk", "state": "next", "starred": True, "duedate": "2026-08-01"},
+                    ]},
+                ],
+                "has_more": False,
+            },
         },
     )
     client = NirvanaClient(pat="pat")
@@ -207,7 +260,15 @@ async def test_fetch_missing_id_raises_not_found(httpx_mock):
     httpx_mock.add_response(
         url=f"{BASE_URL}/get_tasks",
         method="POST",
-        json={"ok": True, "result": [{"id": "other", "name": "Other"}]},
+        json={
+            "ok": True,
+            "result": {
+                "groups": [
+                    {"tasks": [{"id": "other", "name": "Other"}]},
+                ],
+                "has_more": False,
+            },
+        },
     )
     client = NirvanaClient(pat="pat")
     with pytest.raises(NirvanaNotFoundError):
@@ -217,40 +278,76 @@ async def test_fetch_missing_id_raises_not_found(httpx_mock):
 
 @pytest.mark.asyncio
 async def test_fetch_scopes_to_zoho_tag(httpx_mock):
-    """2026-07-28: fetch() must filter by tags=["Zoho"], not scan the whole
-    account — confirmed live that an unfiltered single-page scan silently
-    missed tasks once the account exceeded 200 total items."""
+    """2026-07-28: fetch() must filter by tags=["Zoho"]; cursor pagination is
+    used if the response carries has_more=True."""
     httpx_mock.add_response(
         url=f"{BASE_URL}/get_tasks",
         method="POST",
-        match_json={"tags": ["Zoho"], "limit": NirvanaClient.FETCH_PAGE_SIZE, "offset": 0},
-        json={"ok": True, "result": {"tasks": [{"id": "N1", "name": "Buy milk", "state": "next"}], "has_more": False}},
+        json={
+            "ok": True,
+            "result": {
+                "groups": [
+                    {"tasks": [{"id": "N1", "name": "Buy milk", "state": "next"}]},
+                ],
+                "has_more": False,
+            },
+        },
     )
     client = NirvanaClient(pat="pat")
     result = await client.fetch("N1")
     assert result.title == "Buy milk"
+    req = httpx_mock.get_request()
+    body = json.loads(req.content)
+    assert body["tags"] == ["Zoho"]
+    assert body["limit"] == NirvanaClient.FETCH_PAGE_SIZE
+    # No cursor on the first request.
+    assert "cursor" not in body
     await client.close()
 
 
 @pytest.mark.asyncio
 async def test_fetch_paginates_across_multiple_pages(httpx_mock):
-    """Confirmed live 2026-07-28: get_tasks supports real offset/has_more
-    pagination — fetch() must follow it rather than giving up after one page."""
+    """get_tasks_paginated now uses cursor pagination, passing the previous
+    response's next_cursor as the next call's `cursor` argument (fixed
+    2026-10-20 after Nirvana's offset/limit semantics drifted)."""
     httpx_mock.add_response(
         url=f"{BASE_URL}/get_tasks",
         method="POST",
-        match_json={"tags": ["Zoho"], "limit": NirvanaClient.FETCH_PAGE_SIZE, "offset": 0},
-        json={"ok": True, "result": {"tasks": [{"id": "N1", "name": "Page 1 task"}], "has_more": True}},
+        json={
+            "ok": True,
+            "result": {
+                "groups": [
+                    {"tasks": [{"id": "N1", "name": "Page 1 task"}]},
+                ],
+                "has_more": True,
+                "next_cursor": "cur-page-2",
+            },
+        },
     )
     httpx_mock.add_response(
         url=f"{BASE_URL}/get_tasks",
         method="POST",
-        match_json={"tags": ["Zoho"], "limit": NirvanaClient.FETCH_PAGE_SIZE, "offset": NirvanaClient.FETCH_PAGE_SIZE},
-        json={"ok": True, "result": {"tasks": [{"id": "N2", "name": "Page 2 task"}], "has_more": False}},
+        json={
+            "ok": True,
+            "result": {
+                "groups": [
+                    {"tasks": [{"id": "N2", "name": "Page 2 task"}]},
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            },
+        },
     )
     client = NirvanaClient(pat="pat")
     result = await client.fetch("N2")
     assert result.title == "Page 2 task"
+
+    # Page-1 request had no cursor; page-2 request used the next_cursor.
+    requests = httpx_mock.get_requests()
+    body1 = json.loads(requests[0].content)
+    body2 = json.loads(requests[1].content)
+    assert "cursor" not in body1
+    assert body2["cursor"] == "cur-page-2"
     await client.close()
 
 
@@ -264,7 +361,11 @@ async def test_get_tasks_paginated_stops_at_max_pages_safety_cap():
     async def fake_call_tool(tool, args):
         nonlocal call_count
         call_count += 1
-        return {"tasks": [{"id": f"N{call_count}"}], "has_more": True}
+        return {
+            "groups": [{"tasks": [{"id": f"N{call_count}"}]}],
+            "has_more": True,
+            "next_cursor": "loop",
+        }
 
     with patch.object(client, "call_tool", side_effect=fake_call_tool):
         tasks = await client.get_tasks_paginated(page_size=10, max_pages=3)
@@ -285,8 +386,13 @@ async def test_get_tasks_paginated_stops_when_page_returns_no_tasks():
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return {"tasks": [{"id": "N1"}], "has_more": True}
-        return {"tasks": [], "has_more": True}  # stale has_more, no items -> stop
+            return {
+                "groups": [{"tasks": [{"id": "N1"}]}],
+                "has_more": True,
+                "next_cursor": "more",
+            }
+        # Page 2 is empty; has_more is stale-True but no tasks.
+        return {"groups": [{"tasks": []}], "has_more": True, "next_cursor": "stale"}
 
     with patch.object(client, "call_tool", side_effect=fake_call_tool):
         tasks = await client.get_tasks_paginated(page_size=10, max_pages=25)
@@ -297,8 +403,27 @@ async def test_get_tasks_paginated_stops_when_page_returns_no_tasks():
 
 
 @pytest.mark.asyncio
-async def test_create_delegates_to_create_nirvana_task_and_accepts_description():
-    """description becomes the Nirvana task's note (2026-07-28 decision)."""
+async def test_get_tasks_paginated_breaks_on_non_dict_result():
+    """Defensive: if Nirvana ever returns a body shape we don't recognise
+    (e.g. a bare list at the top level) we must stop paginating rather than
+    infinite-loop or crash."""
+    client = NirvanaClient(pat="pat")
+
+    async def fake_call_tool(tool, args):
+        return [{"id": "unexpected-list-shape"}]
+
+    with patch.object(client, "call_tool", side_effect=fake_call_tool):
+        tasks = await client.get_tasks_paginated(page_size=10, max_pages=5)
+
+    assert tasks == []
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_delegates_to_create_nirvana_task_and_accepts_description(complete_env):
+    """description becomes the Nirvana task's note (2026-07-28 decision).
+    needs complete_env because importing app.nirvana.writer imports
+    app.core.config eagerly via app.core.notifications."""
     client = NirvanaClient(pat="pat")
     normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
     with patch("app.nirvana.writer.create_nirvana_task", new=AsyncMock(return_value="N9")) as mocked:
@@ -308,7 +433,7 @@ async def test_create_delegates_to_create_nirvana_task_and_accepts_description()
 
 
 @pytest.mark.asyncio
-async def test_update_delegates_to_update_nirvana_task():
+async def test_update_delegates_to_update_nirvana_task(complete_env):
     client = NirvanaClient(pat="pat")
     normalised = NormalisedTask(title="t", due_date=None, priority=1, is_completed=False)
     with patch("app.nirvana.writer.update_nirvana_task", new=AsyncMock()) as mocked:
@@ -317,7 +442,7 @@ async def test_update_delegates_to_update_nirvana_task():
 
 
 @pytest.mark.asyncio
-async def test_complete_delegates_to_complete_nirvana_task():
+async def test_complete_delegates_to_complete_nirvana_task(complete_env):
     client = NirvanaClient(pat="pat")
     with patch("app.nirvana.writer.complete_nirvana_task", new=AsyncMock()) as mocked:
         await client.complete("N1")
@@ -325,7 +450,7 @@ async def test_complete_delegates_to_complete_nirvana_task():
 
 
 @pytest.mark.asyncio
-async def test_delete_delegates_to_delete_nirvana_task():
+async def test_delete_delegates_to_delete_nirvana_task(complete_env):
     client = NirvanaClient(pat="pat")
     with patch("app.nirvana.writer.delete_nirvana_task", new=AsyncMock()) as mocked:
         await client.delete("N1", task_name="Buy milk")

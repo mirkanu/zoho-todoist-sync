@@ -252,10 +252,45 @@ async def orphan_sweep(ctx: dict) -> None:
     Two-cycle confirmation (EDGE-5): first detection increments orphan_check_count;
     second consecutive detection triggers deletion + notification + cleanup.
     Rate-limit errors skip the row (not counted as 404). SEED-6.
+
+    Safeguards added 2026-10-20 after a broken NirvanaClient fed 76 false
+    positives into this sweep and the two-cycle confirmation turned them
+    into real Zoho deletions (see memory
+    `2026-10-20-orphan-sweep-incident`):
+
+    * Hard kill-switch via ZTS_DISABLE_ORPHAN_SWEEP=1 — short-circuits the
+      sweep entirely (still persists orphan_sweep_last_run so the
+      monitoring dashboard knows it ran). Until the NirvanaClient fix has
+      been E2E-verified, keep this on in production.
+    * Longer confirm cycle for mixed-provider rows: a row whose `provider`
+      doesn't match the currently active provider needs
+      zts_orphan_mixed_provider_confirm_cycles (default 3) consecutive
+      missing cycles before deletion — protects against using the wrong
+      client for the row's own provider (the 2026-07-28 incident root
+      cause; see commit `e1df7b3` for the row-provider fix).
+    * First-cycle sweep alert: if more than
+      zts_orphan_first_cycle_alert_threshold (default 5) rows are flagged
+      as first-cycle in a single sweep, log a warning that includes the
+      count. Would have caught the 2026-10-20 incident within one sweep
+      instead of two.
     """
     session_factory = ctx["session_factory"]
     zoho_client = ctx["zoho_client"]
     settings = get_settings()
+
+    if settings.zts_disable_orphan_sweep:
+        log.warning(
+            "orphan_sweep_kill_switch_on",
+            hint="ZTS_DISABLE_ORPHAN_SWEEP=1; sweep no-op. Persisting last-run timestamp for monitoring.",
+        )
+        async with session_factory() as session:
+            await upsert_kv(
+                session,
+                KV_ORPHAN_SWEEP_LAST_RUN,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            await session.commit()
+        return
 
     log.info("orphan_sweep_start")
 
@@ -267,11 +302,36 @@ async def orphan_sweep(ctx: dict) -> None:
         result = await session.execute(select(SyncState))
         rows = result.scalars().all()
 
+    # Safeguard: count rows that hit their FIRST consecutive-missing cycle
+    # this sweep. If that count blows past the configured threshold, emit a
+    # warning at the end of the sweep so the operator sees a single,
+    # high-signal alert instead of N individual `orphan_first_cycle` lines.
+    # The 2026-10-20 incident (76 first-cycle rows in one sweep) would have
+    # been caught here within one sweep instead of two.
+    first_cycle_count = 0
+    matched_provider_first_cycle_count = 0
+
     for state in rows:
         zoho_missing = False
         todoist_missing = False
         external_task = None
         zoho_data: dict | None = None
+
+        # Safeguard: longer confirm cycle for mixed-provider rows. The active
+        # provider might not have a fresh client warm for the inactive
+        # provider's API (different auth flow, different rate limit) and the
+        # historical failure mode here has been "wrong client always 404s,
+        # counters tick, next cycle deletes". Forcing an extra confirmation
+        # cycle for those rows is a cheap defence.
+        try:
+            is_mixed_provider = state.provider != settings.task_provider
+        except Exception:
+            is_mixed_provider = False
+        required_cycles = (
+            settings.zts_orphan_mixed_provider_confirm_cycles
+            if is_mixed_provider
+            else 2
+        )
 
         # ------------------------------------------------------------------
         # Zoho check: existence + ownership (EDGE-1 reassignment detection)
@@ -351,18 +411,24 @@ async def orphan_sweep(ctx: dict) -> None:
         # ------------------------------------------------------------------
         # Two-cycle confirmation (EDGE-5): first detection — increment counter
         # ------------------------------------------------------------------
-        if state.orphan_check_count < 1:
+        if state.orphan_check_count < required_cycles - 1:
             log.warning(
                 "orphan_first_cycle",
                 zoho_task_id=state.zoho_task_id,
                 zoho_missing=zoho_missing,
                 todoist_missing=todoist_missing,
+                provider=state.provider,
+                active_provider=settings.task_provider,
+                required_cycles=required_cycles,
             )
             async with session_factory() as sess:
                 async with sess.begin():
                     locked = await sess.get(SyncState, state.zoho_task_id)
                     if locked is not None:
                         locked.orphan_check_count += 1
+            first_cycle_count += 1
+            if not is_mixed_provider:
+                matched_provider_first_cycle_count += 1
             continue
 
         # Second consecutive detection → orphan confirmed; handle it
@@ -372,13 +438,38 @@ async def orphan_sweep(ctx: dict) -> None:
         )
 
     # ------------------------------------------------------------------
+    # Safeguard alert: many first-cycle rows in one sweep is a strong
+    # leading indicator of a client bug (the 2026-10-20 NirvanaClient
+    # parser broke 76 rows in one sweep). The threshold can be disabled
+    # by setting it to 0.
+    # ------------------------------------------------------------------
+    threshold = settings.zts_orphan_first_cycle_alert_threshold
+    if threshold > 0 and first_cycle_count > threshold:
+        log.warning(
+            "orphan_sweep_first_cycle_threshold_exceeded",
+            first_cycle_count=first_cycle_count,
+            threshold=threshold,
+            matched_provider_first_cycle_count=matched_provider_first_cycle_count,
+            hint=(
+                "Unexpectedly many rows hit their first missing cycle in one "
+                "sweep. Verify both TaskProvider clients are healthy before "
+                "the next sweep (next deletion cycle). Consider toggling "
+                "ZTS_DISABLE_ORPHAN_SWEEP=1 if this repeats."
+            ),
+        )
+
+    # ------------------------------------------------------------------
     # Persist last-run timestamp
     # ------------------------------------------------------------------
     async with session_factory() as session:
         await upsert_kv(session, KV_ORPHAN_SWEEP_LAST_RUN, datetime.now(timezone.utc).isoformat())
         await session.commit()
 
-    log.info("orphan_sweep_complete", row_count=len(rows))
+    log.info(
+        "orphan_sweep_complete",
+        row_count=len(rows),
+        first_cycle_count=first_cycle_count,
+    )
 
 
 async def _handle_orphan(
