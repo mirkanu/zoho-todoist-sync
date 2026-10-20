@@ -23,6 +23,27 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str
     log_level: str = "INFO"
+    # Operational kill-switch for orphan_sweep. Set ZTS_DISABLE_ORPHAN_SWEEP=1
+    # in the env to short-circuit orphan_sweep() — added 2026-10-20 after a
+    # broken NirvanaClient silently flagged 76 Nirvana rows as missing and
+    # orphan_sweep's two-cycle confirmation turned lies into real Zoho
+    # deletions. Keep ON until NirvanaClient is fixed AND a dry-run confirms
+    # at least one Nirvana row survives a full cycle (memory
+    # `2026-10-20-orphan-sweep-incident`).
+    zts_disable_orphan_sweep: bool = False
+    # Threshold: if orphan_sweep first-cycles more than this many rows in a
+    # single sweep, log a warning at the end of the sweep. Catches anomalies
+    # like the 2026-10-20 incident (76 first-cycle rows in one sweep because
+    # the NirvanaClient parser was always returning []) before they cascade
+    # into a real wave of deletions. Set to 0 to disable.
+    zts_orphan_first_cycle_alert_threshold: int = 5
+    # How many consecutive missing cycles are required before orphan_sweep
+    # triggers deletion for a row whose provider doesn't match the active
+    # provider. Mirrors the rule that caught a mixed-provider state out on
+    # 2026-07-28: using the wrong client for a row always 404s, so we want
+    # extra confirmation for rows that the currently-active client wouldn't
+    # normally be looking at.
+    zts_orphan_mixed_provider_confirm_cycles: int = 3
 
     @property
     def zoho_terminal_statuses_list(self) -> list[str]:
