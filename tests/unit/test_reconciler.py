@@ -872,11 +872,16 @@ async def test_orphan_sweep_uses_correct_client_per_row_provider(complete_env, m
 @pytest.mark.asyncio
 async def test_orphan_sweep_nirvana_row_missing_deletes_via_nirvana_client(complete_env, monkeypatch):
     """A confirmed-orphan nirvana-provider row must call delete() on
-    ctx["nirvana_client"], not ctx["todoist_client"] or ctx["task_provider"]."""
+    ctx["nirvana_client"], not ctx["todoist_client"] or ctx["task_provider"].
+
+    Mixed-provider rows now require 3 consecutive missing cycles (count=2
+    reached; see orphan_sweep_safeguards tests + memory
+    `2026-10-20-orphan-sweep-incident`) before deletion, so this test
+    drives the state to count=2 to assert the third-cycle delete branch."""
     from app.worker.reconciler import orphan_sweep
     from app.nirvana.client import NirvanaNotFoundError
 
-    state = _make_state(zoho_task_id="Z-NIRVANA", todoist_task_id="N1", orphan_check_count=1)
+    state = _make_state(zoho_task_id="Z-NIRVANA", todoist_task_id="N1", orphan_check_count=2)
     state.provider = "nirvana"
 
     factory, sess = _mock_session_factory_with_rows([state])
