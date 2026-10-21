@@ -1,0 +1,52 @@
+49 not_found Nirvana tasks; original Zoho Subjects (from deletion emails):
+
+  741520000015403040 -> WF 17July Anthony to clarify Urgent: Need clarification on FFSim product codes
+  741520000015544081 -> ask UCC for update
+  741520000015544035 -> WF July20 Emiliano to approve final draft
+  741520000013509002 -> WF Sven to create drawings - expected
+  741520000015484102 -> check we have plenty of brochures in Cork
+  741520000015484085 -> make plan to contact I-Form/IMR and DPTC/Teagasc
+  741520000015403050 -> WF 17July Forza to create A0 poster
+  741520000000520890 -> Acuitis: discuss w. Phil/Steve
+  741520000014534038 -> draft with Claude
+  741520000011172071 -> Make contact with Fernando Muzzio
+  741520000007585216 -> warn them that position of spoon has changed slightly
+  741520000007585202 -> solve PTFE vs UHMWPE, and Silicone vs ??? on probe seal
+  741520000007585150 -> On PO receipt, ensure implementation of: Control panel has isolator which can be locked in the “OFF” position.
+  741520000006941006 -> send email to confirm open vs closed spoon
+  741520000003365266 -> WF 17Jan online form submission
+  741520000003365250 -> WF 17Jan Dave Strachan on LinkedIn
+  741520000003365236 -> WF 17Jan response from info@
+  741520000003365208 -> WF 17Jan info@ response
+  741520000002084535 -> ask Kaiser?
+  741520000012566771 -> ask Martin Warman more about it
+  741520000003365192 -> WF 17Jan email intro reply
+  741520000001968048 -> who makes Gericke's diverter valve?
+  741520000015403024 -> tell JP once ticket price is confirmed
+  741520000015818010 -> @mgt decision & tell David Littlejohn
+  741520000015818105 -> MK to quote - decide markup
+  741520000016116003 -> check Phil's feedback for FFSim angular distance etc
+  741520000016179003 -> quote w. RQS 1265
+  741520000016344003 -> prep quote with CSP & spares
+  741520000016344028 -> @Core FUPs
+  741520000016344033 -> add PM slides, send updated slide deck to Charles
+  741520000016344039 -> raise ETO for µSolis for this (300oC powder, sapphire window)
+  741520000016407091 -> send Greg CAD files etc for trial
+  741520000016424002 -> book attendee ticket (will attend even without oral due to PowTech)
+  741520000016424010 -> mgt: ok to publish? (AI)
+  741520000016513005 -> Brian: how to give/sell Vertex the probe setting tool €960 cost
+  741520000016522745 -> Publish to website & LinkedIn
+  741520000016611001 -> Core: Agree Oct/Nov then arrange with Greg
+  741520000016701035 -> add variographic data & publish
+  741520000016701044 -> Mgt: should Giovana come too?
+  741520000016701059 -> submit abstract by 30th Sept
+  741520000016701064 -> Check if anyone else has published AI-generated (disclaimed) scientific literature reviews - read whole thing
+  741520000016747018 -> make concept sapphire for EPA uSolis - schedule meeting with Mike/Brian
+  741520000016809016 -> Mgt decision 2nd Expo User Group
+  741520000017061001 -> WF 15Sept Tom to give price for MBL-0000-047
+  741520000017371054 -> FUP Hamers (OOO until 23Sep)
+  741520000017453013 -> update mgt - "haben es bisher nur einmal direkt angeboten. Aber sehr oft beworben ? Rechne also nicht mit einer Bestellung von uns."
+  741520000017532011 -> review Sebastian/Giovana feedback
+  741520000017532035 -> get budget price & lead time for 2025Taso ETO: open spoon, 70-80cm length, optionally 2.5"
+  741520000017669072 -> try korsch.com again
+

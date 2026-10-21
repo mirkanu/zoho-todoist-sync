@@ -1,0 +1,47 @@
+Zoho-Todoist-Sync recovery (2026-10-20, second pass — 25 active Nirvana):
+  Recreated Zoho + linked to existing Nirvana: 25/25
+  Failed: 0
+
+ROOT CAUSE: orphan_sweep deleted 76 Zoho tasks because NirvanaClient's
+API parser was broken (wrong response key + offset/limit pagination).
+It had been silently returning 0 tasks / 404s. Two-cycle confirmation
+turned lies into deletions. The 49 'not_found' Nirvana tasks were
+intentionally completed by the user and stay deleted (consistent
+both sides). The 2 in trash are consistent (Zoho also returns 204
+for them, indicating trash). The 25 active Nirvana partners got
+their Zoho counterparts restored here.
+
+STATE:
+  - 49 'not_found' in Nirvana: intentionally completed — left as-is.
+  - 2 in Nirvana trash: also deleted in Zoho — consistent.
+  - 25 active in Nirvana: restored with new Zoho ID + re-linked
+    to original Nirvana UUID (no duplicate Nirvana tasks).
+  - Orphan sweep kill-switch: ON (ZTS_DISABLE_ORPHAN_SWEEP=1)
+    until NirvanaClient is fixed.
+
+RECOVERED (new_zoho_id, nirvana_id, title):
+  741520000018267003 <- 019fa86e-4ef3-7334-84d6-d8877b39d1ee  new Acuitis contract so Phil can share fully - WF Phil to re
+  741520000018280003 <- 019fa86e-73a9-7ddc-88e1-7f5a87068f51  Why do Pfizer not just do feed frame - why U-PAT?
+  741520000018262006 <- 019fa86e-7b66-7440-a487-2f66a3c28919  JP: Need to become friendly with them before they see uSolis
+  741520000018286002 <- 019fa86e-829b-7ddc-88e1-8251b8798e8c  WF 20May update from Steve [QA-1 test 08:17 UTC]
+  741520000018266005 <- 019fa86e-8e52-7334-84d6-f179e6066f92  WF BMS' new service supplier (CBRE?) to request quote
+  741520000018236008 <- 019fa86e-93b8-7ddc-88e1-92c3506b9599  consider IP foreground creation & ownership!
+  741520000018242004 <- 019fa86e-a88a-7334-84d7-045023468c1a  Alan Wang for Pfizer Taso wiring
+  741520000018246004 <- 019fa86e-ae00-7440-a487-308756e7f013  Steve to ask if that's of interest
+  741520000018258003 <- 019fa86e-bb6c-7ddc-88e1-a9a6cbb8b3b3  WF Steve to FUP
+  741520000018270003 <- 019fa86e-c164-7ddc-88e1-b21ce9858288  Ask IMA if they're talking to anyone else to solve uSolis pr
+  741520000018247009 <- 019fa86e-c75a-7ddc-88e1-bdcf561ce7bd  visit UCC next time I'm in Cork
+  741520000018253004 <- 019fa86e-cc54-7440-a487-39204991f96b  WF 11Feb Volker to submit application spec sheet
+  741520000018277007 <- 019fa86e-ef34-7ddc-88e1-e543540291af  present FFS->SW transfer PPT to them - WF work to complete
+  741520000018286007 <- 019fa86e-f467-7440-a487-40936acbd11d  confirm Volker captive head or not
+  741520000018266010 <- 019fa86f-0a9f-7440-a487-5a68bf93617a  WF 19,26Apr,26Aug Anand to reply/schedule
+  741520000018236013 <- 019fa86f-0f72-7ddc-88e1-ec39df70ab8c  discuss next step with Steve
+  741520000018242009 <- 019fa86f-1440-7334-84d7-22b1f04cbd84  WF Sep30,20Jan to hear about any news
+  741520000018235004 <- 019fa86f-1902-7440-a487-67da03746b77  WF 20May update from Steve
+  741520000018255005 <- 019fa86f-1f1b-7ddc-88e1-f0dde46c16b0  WF 20May update from Steve
+  741520000018270008 <- 01a037e9-139e-700e-9c84-d4ce27b3a9f7  deadline for submitting oral and poster abstracts is 7th Dec
+  741520000018274005 <- 01a04890-4d42-711d-aaf6-ad5d880031f3  ask about publishing trial results
+  741520000018272002 <- 01a11620-b1d1-7cc2-9957-18be25f60401  FUP with Louis Boeckhart re case study FFSim->tablet press
+  741520000018247014 <- 01a14450-d79b-700e-8a41-d63da958f98d  Phil D said he'd reach out before end of year re potential F
+  741520000018256005 <- 01a1586e-938b-7110-9049-30783e44b514  WF 15,20Oct NDA from Charley
+  741520000018267008 <- 01a1588a-1ee8-700d-8bd3-16a92fd36f31  schedule call with Phil Doherty re Gerteis (26Oct he's back)
