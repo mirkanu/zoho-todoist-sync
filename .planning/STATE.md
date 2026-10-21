@@ -2,21 +2,21 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Nirvana Provider
-current_phase: 09
-status: milestone_complete
-last_updated: "2026-10-20T15:42:00Z"
+current_phase: 10
+status: active
+last_updated: "2026-10-21T08:58:00Z"
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 1
-  total_plans: 7
+  total_plans: 15
   completed_plans: 0
-  percent: 100
+  percent: 50
 ---
 
 # Project State: zoho-todoist-sync
 
 **Current milestone:** v1.1 Nirvana Provider
-**Current phase:** 09
+**Current phase:** 10
 
 ## Accumulated Context
 
@@ -27,6 +27,7 @@ Phase 9 is informed by three validated spikes in `.planning/spikes/` (001-003): 
 ### Roadmap Evolution
 
 - Phase 9 added: Nirvana TaskProvider — replace Todoist with Nirvana as the sync target behind a TaskProvider abstraction, based on validated spikes 001-003
+- Phase 10 added: Nirvana-initiated sync + notification batching — close the propagation asymmetry hidden by the 2026-10-21 live test (Nirvana creates → Zoho gets it) and stop the per-row email flood that produced 76 deletion emails on 2026-10-20. 8 plans; depends on Phase 9 + quick tasks 261020-ljh and 261021-fix-e2e.
 
 ### Quick Tasks Completed
 
