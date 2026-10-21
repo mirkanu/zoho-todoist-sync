@@ -112,42 +112,63 @@ async def nirvana_fetch_title(nirvana: NirvanaClient, nid: str, expected: str | 
     return task.title
 
 
-async def nirvana_get_raw(nirvana: NirvanaClient, nid: str) -> dict | None:
-    """Direct hit on Nirvana bypassing the tag-filter (which excludes completed)."""
-    try:
-        result = await nirvana.call_tool("get_tasks", {"limit": 500})
-    except Exception:
-        return None
-    if not isinstance(result, dict):
-        return None
-    for grp in result.get("groups", []) or []:
-        for t in grp.get("tasks", []) or []:
-            if str(t.get("id")) == str(nid):
-                return t
-    # paginate if needed
-    cursor = result.get("next_cursor")
-    while cursor:
-        result = await nirvana.call_tool("get_tasks", {"limit": 500, "cursor": cursor})
+async def _walk_tasks(nirvana: NirvanaClient, base_args: dict) -> dict[str, dict]:
+    """Walk every page of `get_tasks` with the given base args and return id → task.
+
+    `base_args` must contain at least `limit`. Cursor is managed independently
+    for each call sequence (different filters do not share cursors).
+    """
+    found: dict[str, dict] = {}
+    cursor: str | None = None
+    while True:
+        args = dict(base_args)
+        if cursor:
+            args["cursor"] = cursor
+        try:
+            result = await nirvana.call_tool("get_tasks", args)
+        except Exception:
+            return found
         if not isinstance(result, dict):
             break
         for grp in result.get("groups", []) or []:
             for t in grp.get("tasks", []) or []:
-                if str(t.get("id")) == str(nid):
-                    return t
+                tid = str(t.get("id"))
+                if tid:
+                    found[tid] = t
+        if not result.get("has_more"):
+            break
         cursor = result.get("next_cursor")
-    return None
+        if not cursor:
+            break
+    return found
+
+
+async def nirvana_get_raw(nirvana: NirvanaClient, nid: str) -> dict | None:
+    """Direct hit on Nirvana, walking BOTH the default state and `state='trash'`.
+
+    Nirvana moves completed tasks to the trash state, so a fresh `get_tasks`
+    (default state) cannot see them. We walk both states with independent
+    cursors and merge results.
+    """
+    default_walk = await _walk_tasks(nirvana, {"limit": 500})
+    if str(nid) in default_walk:
+        return default_walk[str(nid)]
+    trash_walk = await _walk_tasks(nirvana, {"limit": 500, "state": "trash"})
+    return trash_walk.get(str(nid))
 
 
 async def nirvana_fetch_completed(nirvana: NirvanaClient, nid: str) -> bool | None:
     """Return True once Nirvana task is marked completed, None otherwise.
 
     Uses nirvana_get_raw to bypass NirvanaClient.fetch()'s tags=["Zoho"] filter
-    which silently drops completed tasks from the result.
+    which silently drops completed tasks from the result. Nirvana's true
+    completion indicator is the `done` field — `completed` stays None even
+    when a task has been marked done (live probe 2026-10-21).
     """
     task = await nirvana_get_raw(nirvana, nid)
     if task is None:
         return None
-    return True if task.get("completed") is not None else None
+    return True if task.get("done") is True else None
 
 
 async def get_zoho_status(zoho_token: str, zoho_id: str) -> dict | None:
@@ -213,6 +234,7 @@ async def run_e2e() -> int:
     nirvana = NirvanaClient(pat=s.nirvana_pat)
     redis = await create_pool(RedisSettings.from_dsn(s.redis_url))
     cleanup_nirvana_ids: list[str] = []
+    cleanup_zoho_ids_after: list[str] = []
 
     prefix = f"E2E-NV-{int(time.time())}"
     zoho_id: str | None = None
@@ -379,7 +401,7 @@ async def run_e2e() -> int:
             await asyncio.sleep(2)
         assert last is None, f"Zoho {new_zoho_id} still present after Nirvana delete"
         print(f"  OK — Zoho {new_zoho_id} gone after Nirvana delete")
-        cleanup_zoho_ids_after = []  # already deleted
+        # cleanup_zoho_ids_after was pre-initialised; the row is already gone so leave it empty
 
         # =====================================================================
         # DIRECTION 7: Zoho DELETE → Nirvana DELETE
