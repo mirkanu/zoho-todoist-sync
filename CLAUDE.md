@@ -24,6 +24,15 @@ Migrated from Railway to Hetzner VPS on 2026-04-25.
 | **Webhook URL** | `https://zoho.gsdlabs.dev/webhooks/zoho` (auto-renewed by worker cron every 45 min) |
 | **Railway** | No longer used |
 
+## Live E2E Test
+
+`./scripts/run_live_e2e.sh` is the canonical post-change and pre-deploy gate. It runs `scripts/e2e_nirvana_test.py` against the running worker — exercises the bidirectional Zoho ↔ Nirvana sync pipeline end-to-end using the actual sync code path (real Zoho API calls, real Nirvana API calls, real Redis queue, real worker consumption).
+
+- **Run after:** any change to `app/`, any worker image rebuild, before merging a PR that touches sync logic.
+- **Current coverage (2026-10-21):** directions 1–3 pass — Zoho-initiated `create`, `update`, `complete` propagating to Nirvana. Directions 4–7 (Nirvana-initiated sync to Zoho) are not yet implemented in production code and the test exits with FAIL at direction 4. Tracking in a follow-up phase.
+- **Exit 0 today** = Zoho side is fully wired through to Nirvana. **Exit 1 today** = failure at or before direction 3, or direction 4 (not yet implemented). Cleans up after itself; safe to re-run.
+- **What it does NOT cover:** `orphan_sweep`. Passing this test does NOT justify lifting `ZTS_DISABLE_ORPHAN_SWEEP` — the kill-switch protects against `orphan_sweep` regression, which this test doesn't exercise. Lifting the switch still requires a separate dry-run of `orphan_sweep` against a known-good Nirvana account.
+
 ## Key Facts
 
 - **Zoho org region**: EU (`crm.zoho.eu`, `www.zohoapis.eu`, `accounts.zoho.eu`)
@@ -38,7 +47,7 @@ Migrated from Railway to Hetzner VPS on 2026-04-25.
 - **Due date always date-only**: Always normalise to `YYYY-MM-DD`. Never pass `due_datetime` to Todoist.
 - **Description sync is OUT of v1**: Todoist description not written (v1.1 will add Zoho link + deal context).
 - **Zoho webhook is notification-only**: Payload contains `module` + `ids` only. Worker MUST fetch full task from API on dequeue.
-- **Migration is NOT a fresh seed**: Existing Todoist tasks (from Make.com) must be linked by ID via `Todoist_Task_ID` Zoho field. Run E2E test before migration.
+- **Migration is NOT a fresh seed**: Existing Todoist tasks (from Make.com) must be linked by ID via `Todoist_Task_ID` Zoho field. Run the live E2E test (`./scripts/run_live_e2e.sh`) before migration.
 
 ## Planning
 
